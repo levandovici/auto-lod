@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3973846b1ebf4dc4f9d8119407e1cbfe, type: 3}
+  m_Name: DefaultLODProfile
+  m_EditorClassIdentifier: ComplexLODs.Editor::ComplexLODs.ComplexLODProfile
+  preset: 2
+  lodCount: 6
+  reductionRate: 2
+  customRatios: 0
+  triangleRatios:
+  - 1
+  - 0.5
+  - 0.25
+  - 0.125
+  - 0.0625
+  - 0.03
+  - 0.015
+  - 0.008
+  transitionBase: 0.6
+  cullHeight: 0.01
+  crossFade: 1
+  simplify:
+    targetTriangleCount: 1000
+    weldTolerance: 0
+    boundaryWeight: 500
+    lockBoundaries: 0
+    creaseAngle: 35
+    creaseWeight: 25
+    seamWeight: 40
+    extremesWeight: 6
+    extremesPower: 3
+    lockTopVertices: 0
+    lockBoundsExtremes: 0
+    useVertexColorImportance: 0
+    vertexColorChannel: 3
+    importanceMax: 10
+    preventFlips: 1
+    neverCollapseLocked: 1
+    preserveTopology: 1
+    preserveBoundaryLoops: 1
+    recalculateNormals: 0
+  textureLODs: 0
+  maxTextureSize: 0000000000080000000400000002000000010000800000004000000040000000i
+  resizeNormalMaps: 1
+  materialVariants: 1
+  outputFolder: ComplexLODs/Generated

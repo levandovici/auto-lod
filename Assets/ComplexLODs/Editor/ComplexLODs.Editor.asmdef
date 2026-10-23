@@ -1,0 +1,12 @@
+{
+    "name": "ComplexLODs.Editor",
+    "rootNamespace": "ComplexLODs",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "autoReferenced": true,
+    "noEngineReferences": false
+}
