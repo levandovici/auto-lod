@@ -157,17 +157,18 @@ namespace ComplexLODs
             {
                 EditorGUILayout.BeginVertical(EditorStyles.helpBox);
                 EditorGUILayout.LabelField(rr.name + "  (LOD0: " + rr.sourceTriangles + " tris, " +
-                    rr.sourceBoundaryComponents + " openings)", EditorStyles.boldLabel);
+                    rr.sourceBoundaryComponents + " boundary components)", EditorStyles.boldLabel);
                 for (int i = 0; i < rr.levels.Count; i++)
                 {
                     var l = rr.levels[i];
-                    string warn = !l.reachedTarget ? "  (target not reached)" : "";
-                    string openings = l.boundaryComponents == rr.sourceBoundaryComponents
-                        ? "openings OK"
-                        : "openings " + l.boundaryComponents + "/" + rr.sourceBoundaryComponents;
+                    string status = l.sourceReused ? "source retained" :
+                        l.sharedWithPrevious ? "shared with previous level (identical geometry)" :
+                        !l.reachedTarget ? "preservation limited" : "target reached";
+                    if (l.releaseStage > 0) status += " | interior released x" + l.releaseStage;
                     EditorGUILayout.LabelField(
-                        "  LOD" + (i + 1) + ": " + l.triangles + " tris, " + l.vertices + " verts | " +
-                        openings + " | err " + l.rmsError.ToString("0.###") + " | " + l.ms.ToString("0") + " ms" + warn,
+                        "  LOD" + (i + 1) + ": " + l.triangles + "/" + l.targetTriangles + " tris, " +
+                        l.vertices + " verts | boundary components " + l.boundaryComponents + "/" +
+                        rr.sourceBoundaryComponents + " | " + status + " | " + l.ms.ToString("0") + " ms",
                         EditorStyles.miniLabel);
                 }
                 EditorGUILayout.EndVertical();

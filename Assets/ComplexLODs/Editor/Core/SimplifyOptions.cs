@@ -80,10 +80,8 @@ namespace ComplexLODs.Core
         public int resultBoundaryComponents;
         public bool reachedTarget;
         public bool cancelled;
+        public int releaseStage;
         public double elapsedMs;
         public string warning;
-        // Diagnostics (harness): corners whose resolved wedge sits on a
-        // different welded vertex than the corner itself -> emitted shard.
-        public int wedgeMismatch;
     }
 }

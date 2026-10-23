@@ -18,8 +18,6 @@ namespace ComplexLODs.Core
         // local feature scale (mean incident edge length at build time).
         private const float MaxCollapseDistance = 4f;
 
-        internal static int debugWedgeMismatch;
-
         private struct HeapEntry
         {
             public double cost;
@@ -31,7 +29,6 @@ namespace ComplexLODs.Core
         {
             private readonly List<HeapEntry> data = new List<HeapEntry>(1024);
             public int Count => data.Count;
-            public double PeekCost => data.Count > 0 ? data[0].cost : double.PositiveInfinity;
 
             public void Push(double cost, Edge e, int version)
             {
@@ -69,138 +66,6 @@ namespace ComplexLODs.Core
             }
         }
 
-        /// <summary>
-        /// Static surface-deviation guard. A uniform grid over all SOURCE
-        /// vertex positions; when a collapse produces a triangle, every source
-        /// vertex projecting inside its footprint must stay within epsilon of
-        /// the triangle's plane. This rejects "spanning" triangles that cover
-        /// recessed windows, door insets and frames at the wrong depth - the
-        /// shard/criss-cross failure on architectural facades - while still
-        /// allowing large fills over genuinely flat regions. The grid is
-        /// read-only, so it costs a fraction of a live collision index.
-        /// </summary>
-        private sealed class SurfaceGuard
-        {
-            private readonly MeshGraph g;
-            private readonly Vector3[] srcPos;
-            private readonly float cell;
-            private readonly float maxDepth;
-            private readonly Dictionary<Vector3Int, List<int>> grid = new Dictionary<Vector3Int, List<int>>(1024);
-            private readonly List<int> scratch = new List<int>(256);
-            private readonly List<Vector3Int> scratchCells = new List<Vector3Int>(8);
-
-            public SurfaceGuard(MeshGraph g, Bounds bounds)
-            {
-                this.g = g;
-                srcPos = (Vector3[])g.pos.Clone();
-                var lens = new List<float>(g.triAlive.Length);
-                for (int t = 0; t < g.triAlive.Length; t++)
-                {
-                    if (!g.triAlive[t]) continue;
-                    int c0 = g.triCorners[t * 3], c1 = g.triCorners[t * 3 + 1], c2 = g.triCorners[t * 3 + 2];
-                    Vector3 p0 = srcPos[g.cornerVert[c0]], p1 = srcPos[g.cornerVert[c1]], p2 = srcPos[g.cornerVert[c2]];
-                    lens.Add(Mathf.Max((p1 - p0).magnitude, Mathf.Max((p2 - p1).magnitude, (p0 - p2).magnitude)));
-                }
-                lens.Sort();
-                float med = lens.Count > 0 ? lens[lens.Count / 2] : 1f;
-                cell = Mathf.Max(med * 0.5f, 1e-4f);
-                // Depth tolerance: fine enough to catch window/door insets but
-                // loose enough for bevelled edges and coplanar decal sheets.
-                maxDepth = Mathf.Max(bounds.size.magnitude * 0.004f, med * 0.15f);
-                for (int v = 0; v < srcPos.Length; v++)
-                {
-                    var c = CellOf(srcPos[v]);
-                    if (!grid.TryGetValue(c, out var l)) { l = new List<int>(8); grid[c] = l; }
-                    l.Add(v);
-                }
-            }
-
-            private Vector3Int CellOf(Vector3 p) =>
-                new Vector3Int(Mathf.FloorToInt(p.x / cell), Mathf.FloorToInt(p.y / cell), Mathf.FloorToInt(p.z / cell));
-
-            /// <summary>
-            /// Would collapsing edge (a,b) to p push any modified triangle
-            /// across a surface-depth discontinuity?
-            /// </summary>
-            public bool Violates(int a, int b, Vector3 p, List<int> aTris, List<int> bTris)
-            {
-                for (int side = 0; side < 2; side++)
-                {
-                    var list = side == 0 ? aTris : bTris;
-                    if (list == null) continue;
-                    for (int i = 0; i < list.Count; i++)
-                    {
-                        int t = list[i];
-                        if (!g.triAlive[t]) continue;
-                        int c0 = g.triCorners[t * 3], c1 = g.triCorners[t * 3 + 1], c2 = g.triCorners[t * 3 + 2];
-                        int v0 = g.cornerVert[c0], v1 = g.cornerVert[c1], v2 = g.cornerVert[c2];
-                        bool hasA = v0 == a || v1 == a || v2 == a, hasB = v0 == b || v1 == b || v2 == b;
-                        if (hasA && hasB) continue; // dies in the collapse
-                        Vector3 p0 = (v0 == a || v0 == b) ? p : g.pos[v0];
-                        Vector3 p1 = (v1 == a || v1 == b) ? p : g.pos[v1];
-                        Vector3 p2 = (v2 == a || v2 == b) ? p : g.pos[v2];
-                        if (CoversOffPlane(p0, p1, p2)) return true;
-                    }
-                }
-                return false;
-            }
-
-            private bool CoversOffPlane(Vector3 p0, Vector3 p1, Vector3 p2)
-            {
-                Vector3 n = Vector3.Cross(p1 - p0, p2 - p0);
-                float nMag = n.magnitude;
-                if (nMag < 1e-10f) return false;
-                n /= nMag;
-
-                // Query cells overlapped by the triangle's bounding box.
-                scratchCells.Clear();
-                int x0 = Mathf.FloorToInt(Mathf.Min(p0.x, Mathf.Min(p1.x, p2.x)) / cell);
-                int x1 = Mathf.FloorToInt(Mathf.Max(p0.x, Mathf.Max(p1.x, p2.x)) / cell);
-                int y0 = Mathf.FloorToInt(Mathf.Min(p0.y, Mathf.Min(p1.y, p2.y)) / cell);
-                int y1 = Mathf.FloorToInt(Mathf.Max(p0.y, Mathf.Max(p1.y, p2.y)) / cell);
-                int z0 = Mathf.FloorToInt(Mathf.Min(p0.z, Mathf.Min(p1.z, p2.z)) / cell);
-                int z1 = Mathf.FloorToInt(Mathf.Max(p0.z, Mathf.Max(p1.z, p2.z)) / cell);
-                for (int x = x0; x <= x1; x++)
-                    for (int y = y0; y <= y1; y++)
-                        for (int z = z0; z <= z1; z++)
-                            scratchCells.Add(new Vector3Int(x, y, z));
-
-                scratch.Clear();
-                foreach (var cl in scratchCells)
-                    if (grid.TryGetValue(cl, out var l)) scratch.AddRange(l);
-                if (scratch.Count == 0) return false;
-
-                // Dominant axis for the 2D footprint projection.
-                int ax = Mathf.Abs(n.x) >= Mathf.Abs(n.y) && Mathf.Abs(n.x) >= Mathf.Abs(n.z) ? 0
-                       : Mathf.Abs(n.y) >= Mathf.Abs(n.z) ? 1 : 2;
-                for (int i = 0; i < scratch.Count; i++)
-                {
-                    Vector3 v = srcPos[scratch[i]];
-                    float dist = Vector3.Dot(n, v - p0);
-                    if (Mathf.Abs(dist) <= maxDepth) continue;
-                    if (Inside2D(v, p0, p1, p2, ax)) return true;
-                }
-                return false;
-            }
-
-            // Point-in-triangle via barycentric coords on the dominant-axis
-            // projection; small margin excludes verts sitting on the boundary.
-            private static bool Inside2D(Vector3 v, Vector3 p0, Vector3 p1, Vector3 p2, int ax)
-            {
-                Vector2 q, a, b, c;
-                if (ax == 0) { q = new Vector2(v.y, v.z); a = new Vector2(p0.y, p0.z); b = new Vector2(p1.y, p1.z); c = new Vector2(p2.y, p2.z); }
-                else if (ax == 1) { q = new Vector2(v.x, v.z); a = new Vector2(p0.x, p0.z); b = new Vector2(p1.x, p1.z); c = new Vector2(p2.x, p2.z); }
-                else { q = new Vector2(v.x, v.y); a = new Vector2(p0.x, p0.y); b = new Vector2(p1.x, p1.y); c = new Vector2(p2.x, p2.y); }
-                float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
-                if (Mathf.Abs(d) < 1e-12f) return false;
-                float u = ((b.y - c.y) * (q.x - c.x) + (c.x - b.x) * (q.y - c.y)) / d;
-                float w = ((c.y - a.y) * (q.x - c.x) + (a.x - c.x) * (q.y - c.y)) / d;
-                float z = 1f - u - w;
-                const float margin = 0.02f;
-                return u > margin && w > margin && z > margin;
-            }
-        }
-
         public static SimplifyResult Simplify(Mesh source, SimplifyOptions opt)
         {
             var sw = Stopwatch.StartNew();
@@ -215,82 +80,63 @@ namespace ComplexLODs.Core
             res.sourceBoundaryComponents = g.CountBoundaryComponents();
 
             var vertEdges = BuildVertexEdges(g);
-            var ci = BuildComponents(g);
-            ApplyVertexWeightsAndLocks(g, source, opt, ci);
+            ApplyVertexWeightsAndLocks(g, source, opt);
 
-            Quadric[] quadrics = BuildQuadrics(g, opt);
-            var guard = new SurfaceGuard(g, source.bounds);
-            var holeInfo = BuildHoleLoops(g);
-
-            // Whole-component removal queue for small sheets (panes, frames):
-            // price = the sheet's cheapest natural collapse, so it dies when
-            // its own detail would have been consumed anyway - but atomically.
-            var compDeaths = new List<CompDeath>();
-            for (int cid = 0; cid < ci.compSize.Length; cid++)
+            // Feature curves - boundary, sharp crease, attribute-seam,
+            // submesh-change and non-manifold edges - may only collapse along
+            // the chain itself; corners and junctions stay in place.
+            // Non-manifold endpoints are locked outright.
+            foreach (var kv in g.edges)
             {
-                if (!ci.atomic[cid]) continue;
-                double best = double.PositiveInfinity;
-                var seen = new HashSet<Edge>();
-                var cv = ci.compVerts[cid];
-                for (int i = 0; i < cv.Count; i++)
-                {
-                    var ve = vertEdges[cv[i]];
-                    for (int j = 0; j < ve.Count; j++)
-                    {
-                        Edge e2 = ve[j];
-                        if (e2.removed || !seen.Add(e2)) continue;
-                        bool internalEdge = e2.tris.Count > 0;
-                        for (int k = 0; k < e2.tris.Count; k++)
-                            if (ci.triComp[e2.tris[k]] != cid) { internalEdge = false; break; }
-                        if (!internalEdge) continue;
-                        double c = EdgeCost(g, quadrics, e2, opt, out _);
-                        if (c < best) best = c;
-                    }
-                }
-                if (!double.IsInfinity(best))
-                    compDeaths.Add(new CompDeath { cid = cid, tris = ci.compTris[cid], verts = ci.compVerts[cid], cost = best });
+                Edge edge = kv.Value;
+                if (edge.removed) continue;
+                edge.feature = edge.boundary || edge.seam || edge.tris.Count > 2 ||
+                    edge.creaseAngle >= opt.creaseAngle ||
+                    (edge.tris.Count == 2 && g.triSub[edge.tris[0]] != g.triSub[edge.tris[1]]);
+                if (edge.tris.Count > 2)
+                    g.locked[edge.a] = g.locked[edge.b] = true;
             }
-            compDeaths.Sort((x, y) => x.cost.CompareTo(y.cost));
-            int compIdx = 0;
 
+            // Exterior shell: vertices on the 2D convex hull of some viewing
+            // projection form the model's outline. They are locked for the
+            // whole run so the staged interior release below can sacrifice
+            // detail without ever moving the outer bounds.
+            bool[] silhouette = MarkSilhouette(g);
+            for (int i = 0; i < silhouette.Length; i++)
+                if (silhouette[i]) g.locked[i] = true;
+
+            var quadrics = BuildQuadrics(g, opt);
             var heap = new MinHeap();
             foreach (var kv in g.edges)
             {
                 Edge e = kv.Value;
-                double cost = EdgeCost(g, quadrics, e, opt, out _);
+                if (e.removed) continue;
+                double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, 0, out _);
                 if (!double.IsInfinity(cost)) heap.Push(cost, e, e.version);
             }
-
             int target = Mathf.Max(0, opt.targetTriangleCount);
-            int collapses = 0;
-            double errSum = 0, errMax = 0;
-            int iteration = 0;
 
-            // Relaxation ladder: on heavily fragmented meshes (modular kits of
-            // disconnected sheets) the guards legitimately exhaust every legal
-            // collapse far above the target. Rather than stalling, drop the
-            // geometric guards in order of increasing structural impact so
-            // deep LODs can fuse sheets and fill openings into a solid shell.
-            // Flips, slivers, locks and the distance cap always stay on.
-            int relax = 0;
-            while (g.aliveTris > target)
+            // Interior-release ladder, capped by how deep the target is. When
+            // the heap stalls above target the next stage unlocks interior
+            // (non-silhouette) detail; silhouette verts stay locked at every
+            // stage, and flips/slivers/growth, the link condition, attribute
+            // charts and the collapse-distance bound are never relaxed.
+            //   0 - full preservation: feature verts move only along collinear chains
+            //   1 - interior verts may collapse along their feature chain, corners too
+            //   2 - interior verts move freely (seams/creases may be consumed)
+            //   3 - interior boundary loops may additionally dissolve
+            float depth = (float)target / Mathf.Max(1, g.aliveTris);
+            int maxStage = depth >= 0.75f ? 0 : depth >= 0.5f ? 1 : depth >= 0.25f ? 2 : 3;
+            int stage = 0;
+            int collapses = 0, iteration = 0;
+            double errSum = 0, errMax = 0;
+            for (;;)
             {
                 while (heap.Count > 0 && g.aliveTris > target)
                 {
-                    // Whole-component removals cheaper than the next edge
-                    // collapse fire first: a small sheet dies atomically at
-                    // roughly the moment its own collapse cost was due.
-                    while (compIdx < compDeaths.Count && compDeaths[compIdx].cost <= heap.PeekCost && g.aliveTris > target)
-                    {
-                        var cd = compDeaths[compIdx++];
-                        if (RemoveComponent(g, vertEdges, cd, ci)) collapses++;
-                    }
-                    if (g.aliveTris <= target) break;
-
                     HeapEntry h = heap.Pop();
                     Edge e = h.edge;
                     if (e.removed || h.version != e.version) continue;
-
                     if ((iteration++ & 511) == 0)
                     {
                         opt.progress?.Invoke(collapses, res.sourceTriangles, g.aliveTris, target);
@@ -300,82 +146,58 @@ namespace ComplexLODs.Core
                             break;
                         }
                     }
-
-                    double cost = EdgeCost(g, quadrics, e, opt, out Vector3 p);
-                    if (double.IsInfinity(cost)) { e.removed = true; continue; }
-
-                    // Bounded displacement: refuse collapses whose edge is much
-                    // longer than the local feature scale. Without this a vertex
-                    // can jump across a whole pane/region, stretching its triangle
-                    // fan over unrelated coplanar geometry (the z-fighting "shard"
-                    // look on glass facades and window cells).
+                    double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage, out Vector3 p);
+                    if (double.IsInfinity(cost)) continue;
                     float limit = MaxCollapseDistance * Mathf.Max(g.localScale[e.a], g.localScale[e.b]);
                     if ((g.pos[e.a] - g.pos[e.b]).magnitude > limit) continue;
-
                     if (opt.preventFlips && WouldFlip(g, e, p)) continue;
-                    // Surface-deviation guard: a new triangle may not cover
-                    // recessed detail (window/door insets, frames) at the wrong
-                    // depth - the cut-through shard failure on facades.
-                    if (relax < 1 && guard.Violates(e.a, e.b, p, g.vertTris[e.a], g.vertTris[e.b])) continue;
-                    // Opening guard: two verts of the same hole loop may only
-                    // collapse along the loop itself. Interior chords would let a
-                    // triangle span the opening and fill it (doors, windows,
-                    // entrances losing their hole).
-                    if (relax < 2 && CreatesHoleChord(g, vertEdges, e, holeInfo)) continue;
-                    // Atomic-sheet guard: small sheets die whole or survive whole.
-                    var dying = DyingTris(g, e);
-                    if (relax < 3 && PartialSheetKill(g, dying, ci)) continue;
-                    if (relax < 3 && opt.preserveBoundaryLoops && ViolatesBoundaryTopology(g, vertEdges, e)) continue;
-                    if (relax < 4 && opt.preserveTopology && !PassesLinkCondition(g, vertEdges, e)) continue;
-
-                    CommitCollapse(g, quadrics, vertEdges, e, p, holeInfo.vertLoop);
-                    for (int i = 0; i < dying.Count; i++)
-                    {
-                        int dc = ci.triComp[dying[i]];
-                        if (dc >= 0) ci.compAlive[dc]--;
-                    }
+                    if (opt.preserveTopology && !PassesLinkCondition(g, vertEdges, e)) continue;
+                    if (opt.preserveBoundaryLoops && ViolatesBoundaryTopology(g, vertEdges, e, silhouette, stage)) continue;
+                    CommitCollapse(g, quadrics, vertEdges, e, p);
                     collapses++;
-                    double derr = Math.Sqrt(Math.Max(0.0, cost));
-                    errSum += derr;
-                    if (derr > errMax) errMax = derr;
-
-                    // Re-push all edges incident to the surviving vertex.
+                    double errorSquared = Math.Max(0.0, cost);
+                    errSum += errorSquared;
+                    errMax = Math.Max(errMax, Math.Sqrt(errorSquared));
                     var incident = vertEdges[e.a];
                     for (int i = incident.Count - 1; i >= 0; i--)
                     {
-                        Edge e2 = incident[i];
-                        if (e2.removed) { incident.RemoveAt(i); continue; }
-                        e2.version++;
-                        double c = EdgeCost(g, quadrics, e2, opt, out _);
-                        if (!double.IsInfinity(c)) heap.Push(c, e2, e2.version);
-                        else e2.removed = true;
+                        Edge next = incident[i];
+                        if (next.removed) { incident.RemoveAt(i); continue; }
+                        next.version++;
+                        double nextCost = EdgeCost(g, quadrics, vertEdges, next, opt, silhouette, stage, out _);
+                        if (!double.IsInfinity(nextCost)) heap.Push(nextCost, next, next.version);
                     }
                 }
-                if (res.cancelled || g.aliveTris <= target || relax >= 4) break;
-                relax++;
-                // Re-push every live edge under the relaxed regime.
+
+                // Stalled above the target: open the next release stage and
+                // re-offer every surviving edge under the relaxed rules.
+                if (res.cancelled || g.aliveTris <= target || stage >= maxStage) break;
+                stage++;
                 foreach (var kv in g.edges)
                 {
                     Edge e = kv.Value;
                     if (e.removed) continue;
                     e.version++;
-                    double c = EdgeCost(g, quadrics, e, opt, out _);
+                    double c = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage, out _);
                     if (!double.IsInfinity(c)) heap.Push(c, e, e.version);
-                    else e.removed = true;
                 }
             }
+            res.releaseStage = stage;
+
+            if (!res.cancelled && g.aliveTris > target)
+                res.warning = string.IsNullOrEmpty(res.warning)
+                    ? "Stopped above the triangle target to preserve the exterior bounds and feature topology."
+                    : res.warning + " Stopped above the triangle target to preserve the exterior bounds and feature topology.";
 
             res.collapses = collapses;
             res.maxError = (float)errMax;
-            res.rmsError = collapses > 0 ? (float)(errSum / collapses) : 0f;
+            res.rmsError = collapses > 0 ? (float)Math.Sqrt(errSum / collapses) : 0f;
             res.resultTriangles = g.aliveTris;
             res.reachedTarget = g.aliveTris <= target;
             res.resultBoundaryComponents = g.CountBoundaryComponents();
 
-            debugWedgeMismatch = 0;
             res.mesh = RebuildMesh(g, source, opt, out int outVerts);
             res.resultVertices = outVerts;
-            res.wedgeMismatch = debugWedgeMismatch;
             res.elapsedMs = sw.Elapsed.TotalMilliseconds;
             return res;
         }
@@ -391,13 +213,14 @@ namespace ComplexLODs.Core
             foreach (var kv in g.edges)
             {
                 Edge e = kv.Value;
+                if (e.removed) continue;
                 ve[e.a].Add(e);
                 ve[e.b].Add(e);
             }
             return ve;
         }
 
-        private static void ApplyVertexWeightsAndLocks(MeshGraph g, Mesh source, SimplifyOptions opt, CompInfo ci)
+        private static void ApplyVertexWeightsAndLocks(MeshGraph g, Mesh source, SimplifyOptions opt)
         {
             int n = g.pos.Length;
 
@@ -477,175 +300,72 @@ namespace ComplexLODs.Core
                 g.locked[minX] = g.locked[maxX] = g.locked[minY] =
                 g.locked[maxY] = g.locked[minZ] = g.locked[maxZ] = true;
             }
+        }
 
-            // Component-size weighting: verts belonging to small disconnected
-            // sheets (glass panes, window frames, decals - modular kits split
-            // these into dozens of 2-16 tri components) become expensive to
-            // collapse. A pane then survives as a unit until the wall around
-            // it has simplified, instead of dying one corner at a time and
-            // leaving see-through slits in the facade.
-            if (ci != null)
+        // Projection directions for silhouette marking: the six axes plus the
+        // eight body diagonals cover the outline from every cardinal view.
+        private static readonly Vector3[] SilhouetteDirections = {
+            Vector3.right, Vector3.left, Vector3.up, Vector3.down,
+            Vector3.forward, Vector3.back,
+            new Vector3(1, 1, 1), new Vector3(1, 1, -1),
+            new Vector3(1, -1, 1), new Vector3(1, -1, -1),
+            new Vector3(-1, 1, 1), new Vector3(-1, 1, -1),
+            new Vector3(-1, -1, 1), new Vector3(-1, -1, -1)
+        };
+
+        private struct ProjPoint { public float x, y; public int index; }
+
+        private static double Cross2D(ProjPoint o, ProjPoint a, ProjPoint b)
+        {
+            return (double)(a.x - o.x) * (b.y - o.y) - (double)(a.y - o.y) * (b.x - o.x);
+        }
+
+        /// <summary>
+        /// A vertex lying on the 2D convex hull of the mesh projected along any
+        /// viewing direction contributes to the visible outline from that
+        /// direction. Collinear hull-edge points are redundant: with the hull
+        /// corners locked, boundary edges may still shorten along the outline
+        /// but the outline itself cannot move.
+        /// </summary>
+        private static bool[] MarkSilhouette(MeshGraph g)
+        {
+            int n = g.pos.Length;
+            var silhouette = new bool[n];
+            var pts = new ProjPoint[n];
+            foreach (Vector3 raw in SilhouetteDirections)
             {
-                const float CompRef = 128f, MaxCompW = 32f;
-                var seen = new HashSet<int>();
+                Vector3 d = raw.normalized;
+                Vector3 u = Vector3.Cross(d, Mathf.Abs(d.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
+                Vector3 v = Vector3.Cross(d, u);
                 for (int i = 0; i < n; i++)
                 {
-                    var lt = g.vertTris[i];
-                    for (int j = 0; j < lt.Count; j++)
-                    {
-                        int t = lt[j];
-                        if (!g.triAlive[t]) continue;
-                        int cid = ci.triComp[t];
-                        if (!seen.Add(cid)) continue;
-                        float w = Mathf.Min(MaxCompW, CompRef / ci.compSize[cid]);
-                        if (w > 1f)
-                        {
-                            // weight every vert of this component
-                            foreach (int vv in ci.compVerts[cid]) g.weight[vv] *= w;
-                        }
-                    }
+                    Vector3 p = g.pos[i];
+                    pts[i].x = Vector3.Dot(p, u);
+                    pts[i].y = Vector3.Dot(p, v);
+                    pts[i].index = i;
                 }
-            }
-        }
+                Array.Sort(pts, (a, b) => a.x != b.x ? a.x.CompareTo(b.x) : a.y.CompareTo(b.y));
 
-        /// <summary>Connected-component data over triangles sharing welded verts.</summary>
-        private sealed class CompInfo
-        {
-            public int[] triComp;         // comp id per tri
-            public int[] compSize;        // tris per comp
-            public int[] compAlive;       // remaining alive tris per comp
-            public bool[] atomic;         // small comp -> dies whole or not at all
-            public List<int>[] compTris;  // tri ids (atomic comps only)
-            public List<int>[] compVerts; // vert ids (atomic comps only)
-        }
-
-        /// <summary>A whole-component removal queued in cost order.</summary>
-        private sealed class CompDeath
-        {
-            public int cid;
-            public List<int> tris;
-            public List<int> verts;
-            public double cost;
-        }
-
-        // Components of <= AtomicSheetTris triangles are treated as single
-        // sheets: panes, frames, decals. They may only die atomically.
-        private const int AtomicSheetTris = 24;
-
-        private static CompInfo BuildComponents(MeshGraph g)
-        {
-            int tc = g.triAlive.Length;
-            int n = g.pos.Length;
-            var first = new int[n];
-            for (int i = 0; i < n; i++) first[i] = -1;
-            var par = new int[tc];
-            for (int t = 0; t < tc; t++) par[t] = t;
-            int Find(int x) { while (par[x] != x) { par[x] = par[par[x]]; x = par[x]; } return x; }
-            for (int t = 0; t < tc; t++)
-            {
-                if (!g.triAlive[t]) continue;
-                for (int k = 0; k < 3; k++)
+                // Andrew monotone chain - drops collinear hull-edge points.
+                var hull = new List<int>(64);
+                for (int i = 0; i < n; i++)
                 {
-                    int v = g.cornerVert[g.triCorners[t * 3 + k]];
-                    if (first[v] < 0) first[v] = t;
-                    else { int rt = Find(t), rf = Find(first[v]); if (rt != rf) par[rf] = rt; }
+                    while (hull.Count >= 2 &&
+                        Cross2D(pts[hull[hull.Count - 2]], pts[hull[hull.Count - 1]], pts[i]) <= 0)
+                        hull.RemoveAt(hull.Count - 1);
+                    hull.Add(i);
                 }
-            }
-            var index = new Dictionary<int, int>();
-            var ci = new CompInfo
-            {
-                triComp = new int[tc],
-            };
-            var sizes = new List<int>();
-            for (int t = 0; t < tc; t++)
-            {
-                if (!g.triAlive[t]) { ci.triComp[t] = -1; continue; }
-                int r = Find(t);
-                if (!index.TryGetValue(r, out int id)) { id = sizes.Count; index[r] = id; sizes.Add(0); }
-                ci.triComp[t] = id;
-                sizes[id]++;
-            }
-            int c = sizes.Count;
-            ci.compSize = sizes.ToArray();
-            ci.compAlive = (int[])ci.compSize.Clone();
-            ci.atomic = new bool[c];
-            ci.compTris = new List<int>[c];
-            ci.compVerts = new List<int>[c];
-            var vset = new HashSet<int>[c];
-            for (int t = 0; t < tc; t++)
-            {
-                int cid = ci.triComp[t];
-                if (cid < 0 || ci.compSize[cid] > 128) continue; // only comps that can be weighted/atomic need lists
-                if (ci.compSize[cid] <= AtomicSheetTris) ci.atomic[cid] = true;
-                (ci.compTris[cid] ??= new List<int>(4)).Add(t);
-                for (int k = 0; k < 3; k++)
+                int lower = hull.Count;
+                for (int i = n - 2; i >= 0; i--)
                 {
-                    int v = g.cornerVert[g.triCorners[t * 3 + k]];
-                    (vset[cid] ??= new HashSet<int>()).Add(v);
+                    while (hull.Count > lower &&
+                        Cross2D(pts[hull[hull.Count - 2]], pts[hull[hull.Count - 1]], pts[i]) <= 0)
+                        hull.RemoveAt(hull.Count - 1);
+                    hull.Add(i);
                 }
+                for (int i = 0; i < hull.Count; i++) silhouette[pts[hull[i]].index] = true;
             }
-            for (int i = 0; i < c; i++)
-                if (vset[i] != null) ci.compVerts[i] = new List<int>(vset[i]);
-            return ci;
-        }
-
-        /// <summary>Tris that a collapse of e would kill (contain both endpoints).</summary>
-        private static List<int> DyingTris(MeshGraph g, Edge e)
-        {
-            var list = new List<int>(4);
-            var lt = g.vertTris[e.b];
-            for (int i = 0; i < lt.Count; i++)
-            {
-                int t = lt[i];
-                if (g.triAlive[t] && TriHasVert(g, t, e.a)) list.Add(t);
-            }
-            return list;
-        }
-
-        /// <summary>
-        /// Atomic-sheet guard: a collapse may only kill ALL remaining tris of a
-        /// small component (or none). Partial death leaves half-sheets: the
-        /// see-through slits and shard teeth on glass facades.
-        /// </summary>
-        private static bool PartialSheetKill(MeshGraph g, List<int> dying, CompInfo ci)
-        {
-            for (int i = 0; i < dying.Count; i++)
-            {
-                int cid = ci.triComp[dying[i]];
-                if (cid < 0 || !ci.atomic[cid]) continue;
-                int killed = 0;
-                for (int j = 0; j < dying.Count; j++)
-                    if (ci.triComp[dying[j]] == cid) killed++;
-                if (killed < ci.compAlive[cid]) return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Whole-component removal: every surviving tri of the sheet dies at
-        /// once. Edges that lose all their tris are retired.
-        /// </summary>
-        private static bool RemoveComponent(MeshGraph g, List<Edge>[] vertEdges, CompDeath cd, CompInfo ci)
-        {
-            bool any = false;
-            for (int i = 0; i < cd.tris.Count; i++)
-                if (g.triAlive[cd.tris[i]]) { g.RemoveTri(cd.tris[i]); any = true; }
-            if (!any) return false;
-            ci.compAlive[cd.cid] = 0;
-            for (int i = 0; i < cd.verts.Count; i++)
-            {
-                var list = vertEdges[cd.verts[i]];
-                for (int j = 0; j < list.Count; j++)
-                {
-                    Edge e2 = list[j];
-                    if (e2.removed) continue;
-                    bool alive = false;
-                    for (int k = 0; k < e2.tris.Count; k++)
-                        if (g.triAlive[e2.tris[k]]) { alive = true; break; }
-                    if (!alive) e2.removed = true;
-                }
-            }
-            return true;
+            return silhouette;
         }
 
         private static Quadric[] BuildQuadrics(MeshGraph g, SimplifyOptions opt)
@@ -658,6 +378,7 @@ namespace ComplexLODs.Core
             const double relSigma = 0.05;
             for (int t = 0; t < g.triSub.Length; t++)
             {
+                if (!g.triAlive[t]) continue;
                 int c0 = g.triCorners[t * 3], c1 = g.triCorners[t * 3 + 1], c2 = g.triCorners[t * 3 + 2];
                 int v0 = g.cornerVert[c0], v1 = g.cornerVert[c1], v2 = g.cornerVert[c2];
                 Quadric q = Quadric.FromProbabilisticTriangle(g.pos[v0], g.pos[v1], g.pos[v2], relSigma);
@@ -670,6 +391,7 @@ namespace ComplexLODs.Core
             foreach (var kv in g.edges)
             {
                 Edge e = kv.Value;
+                if (e.removed || e.tris.Count == 0) continue;
 
                 if (e.tris.Count != 2 && opt.boundaryWeight > 0f)
                 {
@@ -729,39 +451,161 @@ namespace ComplexLODs.Core
         // Collapse
         // ------------------------------------------------------------------
 
-        private static double EdgeCost(MeshGraph g, Quadric[] quadrics, Edge e, SimplifyOptions opt, out Vector3 best)
+        private static double EdgeCost(MeshGraph g, Quadric[] quadrics,
+            List<Edge>[] vertEdges, Edge e, SimplifyOptions opt,
+            bool[] silhouette, int stage, out Vector3 best)
         {
             best = Vector3.zero;
             bool la = g.locked[e.a], lb = g.locked[e.b];
             if (la && lb) return double.PositiveInfinity;
-
             Quadric q = quadrics[e.a];
             q.Add(ref quadrics[e.b]);
-
+            Vector3 pa = g.pos[e.a], pb = g.pos[e.b], chosen = Vector3.zero;
             double cost = double.PositiveInfinity;
-            Vector3 pa = g.pos[e.a], pb = g.pos[e.b];
-
-            if (!lb)
+            void Consider(Vector3 p)
             {
-                double c = q.Eval(pa);
-                if (c < cost) { cost = c; best = pa; }
+                if (!PreservesFeatureVertex(g, vertEdges, e.a, e.b, p, silhouette, stage) ||
+                    !PreservesFeatureVertex(g, vertEdges, e.b, e.a, p, silhouette, stage) ||
+                    !CanMoveAttributes(g, e, p)) return;
+                double c = q.Eval(p);
+                if (double.IsNaN(c) || double.IsInfinity(c)) return;
+                if (c < cost) { cost = c; chosen = p; }
             }
-            if (!la)
-            {
-                double c = q.Eval(pb);
-                if (c < cost) { cost = c; best = pb; }
-            }
-            if (!la && !lb && !e.phantom)
-            {
-                // Midpoints are only valid along edges that still coincide with a
-                // real source edge. Phantom edges (inherited through a moved
-                // vertex) can bridge separate surface sheets; their midpoint
-                // would float in space and create crossing triangles.
-                Vector3 mid = (pa + pb) * 0.5f;
-                double c = q.Eval(mid);
-                if (c < cost) { cost = c; best = mid; }
-            }
+            if (!lb) Consider(pa);
+            if (!la) Consider(pb);
+            if (!la && !lb && !e.phantom) Consider((pa + pb) * .5f);
+            best = chosen;
             return cost;
+        }
+
+        // A vertex on a feature curve may only move along the chain itself:
+        // endpoint placement on its collinear feature neighbour. Corners and
+        // junctions (non-collinear or 3+ feature edges) never move.
+        // Interior release relaxes this for vertices that are NOT on the
+        // exterior silhouette: stage 1 allows collapsing along the chain past
+        // corners and junctions, stage 2 frees interior vertices entirely.
+        // Silhouette verts keep the strict rule at every stage, so the outer
+        // bounds never move.
+        private static bool PreservesFeatureVertex(MeshGraph g, List<Edge>[] vertEdges,
+            int vertex, int other, Vector3 p, bool[] silhouette, int stage)
+        {
+            if (p.Equals(g.pos[vertex])) return true;
+            bool shell = silhouette[vertex];
+            if (!shell && stage >= 2) return true;
+            int count = 0;
+            Vector3 first = Vector3.zero, second = Vector3.zero;
+            bool alongFeature = false;
+            foreach (Edge edge in vertEdges[vertex])
+            {
+                if (edge.removed || !edge.feature) continue;
+                int neighbor = edge.a == vertex ? edge.b : edge.a;
+                alongFeature |= neighbor == other;
+                if (++count == 1) first = g.pos[neighbor] - g.pos[vertex];
+                else if (count == 2) second = g.pos[neighbor] - g.pos[vertex];
+            }
+            if (count == 0) return true;
+            if (!alongFeature || !p.Equals(g.pos[other])) return false;
+            if (!shell && stage >= 1) return true;
+            if (count != 2) return false; // shell corner/junction stays
+            double product = (double)first.sqrMagnitude * second.sqrMagnitude;
+            return product > 0 && Vector3.Dot(first, second) < 0 &&
+                Vector3.Cross(first, second).sqrMagnitude <= product * 1e-10;
+        }
+
+        // ------------------------------------------------------------------
+        // Attribute transport
+        // ------------------------------------------------------------------
+
+        private static HashSet<int> UsedWedges(MeshGraph g, int vertex)
+        {
+            var used = new HashSet<int>();
+            foreach (int t in g.vertTris[vertex])
+            {
+                if (!g.triAlive[t]) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int c = g.triCorners[t * 3 + k];
+                    if (g.cornerVert[c] == vertex)
+                        used.Add(g.ResolveWedge(g.cornerWedge[c]));
+                }
+            }
+            return used;
+        }
+
+        private static int PartnerWedge(MeshGraph g, Edge e, int vertex, int wedge)
+        {
+            int partner = -1, other = vertex == e.a ? e.b : e.a;
+            foreach (int t in e.tris)
+            {
+                if (!g.triAlive[t]) continue;
+                bool hasWedge = false;
+                int candidate = -1;
+                for (int k = 0; k < 3; k++)
+                {
+                    int c = g.triCorners[t * 3 + k];
+                    int w = g.ResolveWedge(g.cornerWedge[c]);
+                    if (g.cornerVert[c] == vertex && w == wedge) hasWedge = true;
+                    if (g.cornerVert[c] == other) candidate = w;
+                }
+                if (!hasWedge || candidate < 0) continue;
+                if (partner >= 0 && !MeshGraph.AttributesEqual(g.wedges[partner], g.wedges[candidate]))
+                    return -1;
+                partner = candidate;
+            }
+            return partner;
+        }
+
+        private static bool CanMoveAttributes(MeshGraph g, Edge e, Vector3 p)
+        {
+            for (int side = 0; side < 2; side++)
+            {
+                int v = side == 0 ? e.a : e.b;
+                if (p.Equals(g.pos[v])) continue;
+                foreach (int wid in UsedWedges(g, v))
+                {
+                    int partner = PartnerWedge(g, e, v, wid);
+                    if (partner < 0) return false;
+                    Wedge a = g.wedges[wid], b = g.wedges[partner];
+                    if (!a.boneWeight.Equals(b.boneWeight) || a.tangent.w != b.tangent.w) return false;
+                }
+            }
+            return true;
+        }
+
+        private static void MoveAttributes(MeshGraph g, Edge e, Vector3 p)
+        {
+            Vector3 edge = g.pos[e.b] - g.pos[e.a];
+            float t = edge.sqrMagnitude > 0 ?
+                Mathf.Clamp01(Vector3.Dot(p - g.pos[e.a], edge) / edge.sqrMagnitude) : 0;
+            var changes = new List<(Wedge destination, Wedge value)>();
+            for (int side = 0; side < 2; side++)
+            {
+                int v = side == 0 ? e.a : e.b;
+                if (p.Equals(g.pos[v])) continue;
+                foreach (int wid in UsedWedges(g, v))
+                {
+                    int partner = PartnerWedge(g, e, v, wid);
+                    // Eligibility checked before committing; a missing pair is a programming error.
+                    if (partner < 0) throw new InvalidOperationException("Missing edge attribute chart");
+                    Wedge a = g.wedges[side == 0 ? wid : partner];
+                    Wedge b = g.wedges[side == 0 ? partner : wid];
+                    Vector4 tangent = Vector4.Lerp(a.tangent, b.tangent, t);
+                    Vector3 direction = new Vector3(tangent.x, tangent.y, tangent.z).normalized;
+                    changes.Add((g.wedges[wid], new Wedge {
+                        normal = Vector3.Lerp(a.normal, b.normal, t).normalized,
+                        tangent = new Vector4(direction.x, direction.y, direction.z, a.tangent.w),
+                        uv0 = Vector2.Lerp(a.uv0,b.uv0,t), uv1 = Vector2.Lerp(a.uv1,b.uv1,t),
+                        uv2 = Vector2.Lerp(a.uv2,b.uv2,t), uv3 = Vector2.Lerp(a.uv3,b.uv3,t),
+                        color = Color32.Lerp(a.color,b.color,t), boneWeight = a.boneWeight
+                    }));
+                }
+            }
+            foreach (var update in changes)
+            {
+                Wedge d = update.destination, s = update.value;
+                d.normal=s.normal; d.tangent=s.tangent; d.uv0=s.uv0; d.uv1=s.uv1;
+                d.uv2=s.uv2; d.uv3=s.uv3; d.color=s.color; d.boneWeight=s.boneWeight;
+            }
         }
 
         private static Vector3 CrossWithOverride(MeshGraph g, int tri, int ovA, int ovB, Vector3 p)
@@ -869,6 +713,27 @@ namespace ComplexLODs.Core
                 if (x == a || apex.Contains(x)) continue;
                 if (IsNeighbor(vertEdges[a], x)) return false;
             }
+
+            // Reject collapses that leave two surviving faces on the same
+            // vertex pair (a tetrahedron degrading to a double-sided fin).
+            var faces = new HashSet<ulong>();
+            var visited = new HashSet<int>();
+            for (int side = 0; side < 2; side++)
+            {
+                foreach (int t in g.vertTris[side == 0 ? a : b])
+                {
+                    if (!g.triAlive[t] || !visited.Add(t)) continue;
+                    if (TriHasVert(g, t, a) && TriHasVert(g, t, b)) continue;
+                    int x = -1, y = -1;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int v = g.cornerVert[g.triCorners[t * 3 + k]];
+                        if (v == a || v == b) continue;
+                        if (x < 0) x = v; else y = v;
+                    }
+                    if (x >= 0 && y >= 0 && !faces.Add(MeshGraph.EdgeKey(x, y))) return false;
+                }
+            }
             return true;
         }
 
@@ -891,22 +756,25 @@ namespace ComplexLODs.Core
         ///   opening into two;
         /// - a boundary edge may only collapse if its loop keeps >= 3 edges.
         /// </summary>
-        private static bool ViolatesBoundaryTopology(MeshGraph g, List<Edge>[] vertEdges, Edge e)
+        private static bool ViolatesBoundaryTopology(MeshGraph g, List<Edge>[] vertEdges, Edge e,
+            bool[] silhouette, int stage)
         {
             if (!TouchesBoundary(vertEdges[e.a]) || !TouchesBoundary(vertEdges[e.b]))
                 return false;
 
             // Walk the boundary-edge component containing a; find whether b is
-            // on it and how many edges the component has.
+            // on it, how many edges the component has and whether it touches
+            // the exterior silhouette.
             var seenVert = new HashSet<int>();
             var seenEdge = new HashSet<Edge>();
             var stack = new Stack<int>();
             stack.Push(e.a);
             seenVert.Add(e.a);
-            bool reachedB = false;
+            bool reachedB = false, onShell = silhouette[e.a] || silhouette[e.b];
             while (stack.Count > 0)
             {
                 int v = stack.Pop();
+                onShell |= silhouette[v];
                 var list = vertEdges[v];
                 for (int i = 0; i < list.Count; i++)
                 {
@@ -918,6 +786,10 @@ namespace ComplexLODs.Core
                     if (seenVert.Add(o)) stack.Push(o);
                 }
             }
+
+            // Deepest release: a boundary component that shares no silhouette
+            // vertex is a fully interior opening - it may now shrink away.
+            if (stage >= 3 && !onShell) return false;
 
             if (!reachedB) return true;                       // loop merge
             if (e.boundary) return seenEdge.Count <= 3;       // loop annihilation
@@ -931,148 +803,14 @@ namespace ComplexLODs.Core
             return false;
         }
 
-        /// <summary>
-        /// Boundary-loop map with hole classification. A boundary component is
-        /// a hole when its polygon interior contains no source geometry
-        /// (door/window openings); the outer silhouette contains the whole
-        /// surface instead and must not be hole-guarded.
-        /// </summary>
-        private sealed class HoleInfo
-        {
-            public int[] vertLoop;   // boundary component id per vert, -1 none
-            public bool[] isHole;
-        }
-
-        private static HoleInfo BuildHoleLoops(MeshGraph g)
-        {
-            int n = g.pos.Length;
-            var vertLoop = new int[n];
-            for (int i = 0; i < n; i++) vertLoop[i] = -1;
-
-            // Union-find over boundary-edge endpoints.
-            var parent = new Dictionary<int, int>();
-            int Find(int x)
-            {
-                int r = x;
-                while (parent.TryGetValue(r, out int p) && p != r) r = p;
-                int p2;
-                while (parent.TryGetValue(x, out p2) && p2 != r) { parent[x] = r; x = p2; }
-                return r;
-            }
-            void Union(int a, int b)
-            {
-                if (!parent.ContainsKey(a)) parent[a] = a;
-                if (!parent.ContainsKey(b)) parent[b] = b;
-                int ra = Find(a), rb = Find(b);
-                if (ra != rb) parent[rb] = ra;
-            }
-            foreach (var kv in g.edges)
-            {
-                Edge e = kv.Value;
-                if (e.removed || !e.boundary) continue;
-                Union(e.a, e.b);
-            }
-
-            // Group boundary verts per component.
-            var comps = new Dictionary<int, List<int>>();
-            var compId = new Dictionary<int, int>();
-            var compSet = new Dictionary<int, HashSet<int>>();
-            foreach (var kv in g.edges)
-            {
-                Edge e = kv.Value;
-                if (e.removed || !e.boundary) continue;
-                int r = Find(e.a);
-                if (!compId.TryGetValue(r, out int id))
-                {
-                    id = comps.Count;
-                    compId[r] = id;
-                    comps[id] = new List<int>();
-                    compSet[id] = new HashSet<int>();
-                }
-                if (compSet[id].Add(e.a)) comps[id].Add(e.a);
-                if (compSet[id].Add(e.b)) comps[id].Add(e.b);
-                if (vertLoop[e.a] < 0) vertLoop[e.a] = id;
-                if (vertLoop[e.b] < 0) vertLoop[e.b] = id;
-            }
-
-            var isHole = new bool[comps.Count];
-            foreach (var kv in comps)
-            {
-                var verts = kv.Value;
-                if (verts.Count < 3) continue;
-                var c = Vector3.zero;
-                foreach (int v in verts) c += g.pos[v];
-                c /= verts.Count;
-                // Order-free plane estimate: the loop is flat along the axis
-                // with the smallest positional variance -> drop that axis.
-                float vx = 0f, vy = 0f, vz = 0f;
-                foreach (int v in verts)
-                {
-                    Vector3 d = g.pos[v] - c;
-                    vx += d.x * d.x; vy += d.y * d.y; vz += d.z * d.z;
-                }
-                int ax = vx <= vy && vx <= vz ? 0 : vy <= vz ? 1 : 2;
-                Vector2 cent2 = Proj2(c, ax);
-                // The loop bounds a hole if NO source triangle footprint
-                // contains the centroid in this projection.
-                bool covered = false;
-                for (int t = 0; t < g.triAlive.Length && !covered; t++)
-                {
-                    if (!g.triAlive[t]) continue;
-                    int c0 = g.triCorners[t * 3], c1 = g.triCorners[t * 3 + 1], c2 = g.triCorners[t * 3 + 2];
-                    Vector3 p0 = g.pos[g.cornerVert[c0]], p1 = g.pos[g.cornerVert[c1]], p2 = g.pos[g.cornerVert[c2]];
-                    // fast bbox reject in the projection plane
-                    Vector2 a2 = Proj2(p0, ax), b2 = Proj2(p1, ax), d2 = Proj2(p2, ax);
-                    float mnx = Mathf.Min(a2.x, Mathf.Min(b2.x, d2.x)), mxx = Mathf.Max(a2.x, Mathf.Max(b2.x, d2.x));
-                    float mny = Mathf.Min(a2.y, Mathf.Min(b2.y, d2.y)), mxy = Mathf.Max(a2.y, Mathf.Max(b2.y, d2.y));
-                    if (cent2.x < mnx || cent2.x > mxx || cent2.y < mny || cent2.y > mxy) continue;
-                    float den = (b2.y - d2.y) * (a2.x - d2.x) + (d2.x - b2.x) * (a2.y - d2.y);
-                    if (Mathf.Abs(den) < 1e-12f) continue;
-                    float u = ((b2.y - d2.y) * (cent2.x - d2.x) + (d2.x - b2.x) * (cent2.y - d2.y)) / den;
-                    float w = ((d2.y - a2.y) * (cent2.x - d2.x) + (a2.x - d2.x) * (cent2.y - d2.y)) / den;
-                    float z = 1f - u - w;
-                    if (u >= -0.001f && w >= -0.001f && z >= -0.001f) covered = true;
-                }
-                isHole[kv.Key] = !covered;
-            }
-            return new HoleInfo { vertLoop = vertLoop, isHole = isHole };
-        }
-
-        private static Vector2 Proj2(Vector3 p, int ax) =>
-            ax == 0 ? new Vector2(p.y, p.z) : ax == 1 ? new Vector2(p.x, p.z) : new Vector2(p.x, p.y);
-
-        /// <summary>
-        /// Rejects collapses that would bridge a hole loop's interior:
-        /// (a) interior edges between two verts of the same hole loop are
-        /// chords across the opening; (b) repointing b's edges to a may create
-        /// chord pairings to loop verts that aren't loop-adjacent to a.
-        /// </summary>
-        private static bool CreatesHoleChord(MeshGraph g, List<Edge>[] vertEdges, Edge e, HoleInfo info)
-        {
-            int la = info.vertLoop[e.a], lb = info.vertLoop[e.b];
-            if (la >= 0 && la == lb && info.isHole[la] && !e.boundary) return true;
-            int surv = la >= 0 ? la : lb;
-            if (surv < 0 || !info.isHole[surv]) return false;
-            var bEdges = vertEdges[e.b];
-            for (int i = 0; i < bEdges.Count; i++)
-            {
-                Edge e2 = bEdges[i];
-                if (e2.removed) continue;
-                int x = e2.a == e.b ? e2.b : e2.a;
-                if (x == e.a || info.vertLoop[x] != surv) continue;
-                Edge ax = g.GetEdge(e.a, x);
-                if (ax == null || ax.removed || !ax.boundary) return true;
-            }
-            return false;
-        }
-
-        private static void CommitCollapse(MeshGraph g, Quadric[] quadrics, List<Edge>[] vertEdges, Edge e, Vector3 p,
-            int[] vertLoop)
+        private static void CommitCollapse(MeshGraph g, Quadric[] quadrics, List<Edge>[] vertEdges, Edge e, Vector3 p)
         {
             int a = e.a, b = e.b;
+            // Transport attributes along the source edge chart before any
+            // position or wedge changes below.
+            MoveAttributes(g, e, p);
             Vector3 oldA = g.pos[a];
             g.pos[a] = p;
-            if (vertLoop[a] < 0) vertLoop[a] = vertLoop[b];
 
             // When the survivor moved, its own incident edges no longer coincide
             // with source edges - they are phantom now (b's edges are handled below).
@@ -1149,10 +887,10 @@ namespace ComplexLODs.Core
                     foreach (int t in e2.tris)
                         if (g.triAlive[t] && !existing.tris.Contains(t)) existing.tris.Add(t);
                     existing.seam |= e2.seam;
+                    existing.feature |= e2.feature;
                     e2.removed = true;
                     List<Edge> oe = vertEdges[other];
                     if (!oe.Contains(existing)) oe.Add(existing);
-                    RefreshEdge(g, existing);
                 }
                 else
                 {
@@ -1160,8 +898,12 @@ namespace ComplexLODs.Core
                     if (a < other) { e2.a = a; e2.b = other; } else { e2.a = other; e2.b = a; }
                     g.edges[MeshGraph.EdgeKey(e2.a, e2.b)] = e2;
                     vertEdges[a].Add(e2);
-                    RefreshEdge(g, e2);
                 }
+            }
+            foreach (Edge incident in vertEdges[a])
+            {
+                if (incident.removed || incident == e) continue;
+                RefreshEdge(g, incident);
             }
 
             // 4. Accumulate quadric + lock state.
@@ -1182,13 +924,7 @@ namespace ComplexLODs.Core
             {
                 Wedge w = g.wedges[owned[i]];
                 if (w.removed) continue;
-                if ((w.normal - candidate.normal).sqrMagnitude < 1e-4f &&
-                    (w.uv0 - candidate.uv0).sqrMagnitude < 1e-4f &&
-                    (w.uv1 - candidate.uv1).sqrMagnitude < 1e-4f &&
-                    (w.uv2 - candidate.uv2).sqrMagnitude < 1e-4f &&
-                    (w.uv3 - candidate.uv3).sqrMagnitude < 1e-4f &&
-                    w.color.r == candidate.color.r && w.color.g == candidate.color.g &&
-                    w.color.b == candidate.color.b && w.color.a == candidate.color.a)
+                if (MeshGraph.AttributesEqual(w, candidate))
                     return owned[i];
             }
             return -1;
@@ -1198,6 +934,7 @@ namespace ComplexLODs.Core
         {
             for (int i = e.tris.Count - 1; i >= 0; i--)
                 if (!g.triAlive[e.tris[i]]) e.tris.RemoveAt(i);
+            if (e.tris.Count == 0) { e.removed = true; return; }
             e.boundary = e.tris.Count == 1;
             e.creaseAngle = 0f;
             if (e.tris.Count == 2)
@@ -1246,7 +983,6 @@ namespace ComplexLODs.Core
                     int c = g.triCorners[t * 3 + k];
                     int w = g.ResolveWedge(g.cornerWedge[c]);
                     g.cornerWedge[c] = w;
-                    if (g.wedges[w].vertex != g.cornerVert[c]) debugWedgeMismatch++;
                     int idx;
                     if (!wedgeToOut.TryGetValue(w, out idx))
                     {

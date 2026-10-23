@@ -30,6 +30,7 @@ namespace ComplexLODs.Core
         public bool boundary;
         public bool seam;
         public bool phantom;        // edge no longer coincides with a real source edge
+        public bool feature;        // part of a source feature curve (boundary, seam, crease, non-manifold or submesh change)
         public float creaseAngle;
     }
 
@@ -137,7 +138,7 @@ namespace ComplexLODs.Core
         // Build
         // ------------------------------------------------------------------
 
-        private const float AttrEps = 1e-4f;
+        private const float AttrEps = 1e-6f;
 
         public static MeshGraph Build(Mesh mesh, float weldTolerance)
         {
@@ -145,7 +146,8 @@ namespace ComplexLODs.Core
             var weld = WeldPositions(srcPos, weldTolerance);
 
             var g = new MeshGraph();
-            int vCount = weld.Count;
+            int vCount = 0;
+            foreach (int id in weld.Values) vCount = Mathf.Max(vCount, id + 1);
             g.pos = new Vector3[vCount];
             foreach (var kv in weld) g.pos[kv.Value] = srcPos[kv.Key];
 
@@ -265,6 +267,9 @@ namespace ComplexLODs.Core
             foreach (var kv in g.edges)
             {
                 Edge e = kv.Value;
+                for (int i = e.tris.Count - 1; i >= 0; i--)
+                    if (!g.triAlive[e.tris[i]]) e.tris.RemoveAt(i);
+                if (e.tris.Count == 0) { e.removed = true; continue; }
                 e.boundary = e.tris.Count == 1;
                 if (e.tris.Count == 2)
                 {
@@ -284,6 +289,7 @@ namespace ComplexLODs.Core
             foreach (var kv in g.edges)
             {
                 Edge e = kv.Value;
+                if (e.removed) continue;
                 float l = (g.pos[e.a] - g.pos[e.b]).magnitude;
                 eSum[e.a] += l; eCnt[e.a]++;
                 eSum[e.b] += l; eCnt[e.b]++;
@@ -342,9 +348,17 @@ namespace ComplexLODs.Core
             return wedgeList.Count - 1;
         }
 
-        private static bool Approx(Vector3 a, Vector3 b) => (a - b).sqrMagnitude < AttrEps;
-        private static bool Approx(Vector4 a, Vector4 b) => (a - b).sqrMagnitude < AttrEps;
-        private static bool Approx(Vector2 a, Vector2 b) => (a - b).sqrMagnitude < AttrEps;
+        internal static bool AttributesEqual(Wedge a, Wedge b) =>
+            Approx(a.normal, b.normal) && Approx(a.tangent, b.tangent) &&
+            Approx(a.uv0, b.uv0) && Approx(a.uv1, b.uv1) &&
+            Approx(a.uv2, b.uv2) && Approx(a.uv3, b.uv3) &&
+            a.color.r == b.color.r && a.color.g == b.color.g &&
+            a.color.b == b.color.b && a.color.a == b.color.a &&
+            Approx(a.boneWeight, b.boneWeight);
+
+        private static bool Approx(Vector3 a, Vector3 b) => (a - b).sqrMagnitude < AttrEps * AttrEps;
+        private static bool Approx(Vector4 a, Vector4 b) => (a - b).sqrMagnitude < AttrEps * AttrEps;
+        private static bool Approx(Vector2 a, Vector2 b) => (a - b).sqrMagnitude < AttrEps * AttrEps;
         private static bool Approx(BoneWeight a, BoneWeight b)
         {
             return Mathf.Abs(a.weight0 - b.weight0) < AttrEps &&
