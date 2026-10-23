@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComplexLODs — architecture-safe LOD generation for Unity</title>
+<meta name="description" content="ComplexLODs generates mesh and texture LODs for Unity while preserving exterior bounds, openings, and silhouettes.">
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<header>
+    <div class="wrap">
+        <h1>Complex<em>LODs</em></h1>
+        <p class="tag">Feature-preserving level-of-detail generation for Unity architecture — exterior bounds locked, interior detail released by depth.</p>
+    </div>
+</header>
+
+<main class="wrap">
+    <section class="viewer-card">
+        <div class="viewer-head">
+            <h2>Live demo — JC_LP_MegaCity Airport_01</h2>
+            <div class="stats">
+                <span id="lodLabel">LOD0 (source)</span>
+                <span id="triLabel">— tris</span>
+                <span id="stageLabel"></span>
+            </div>
+        </div>
+        <div id="viewport"></div>
+        <div class="controls">
+            <label class="slider-row">
+                <span>LOD level</span>
+                <input id="lodSlider" type="range" min="0" max="5" step="1" value="0" disabled>
+                <span id="lodVal">0</span>
+            </label>
+            <label><input id="wire" type="checkbox"> wireframe</label>
+            <label><input id="spin" type="checkbox" checked> auto-rotate</label>
+        </div>
+        <p class="note">All meshes on this page are real output of the ComplexLODs simplifier on the actual Airport_01 source (Quality preset). LOD3–5 intentionally share one mesh — identical geometry is deduplicated, exactly as the Unity plugin does.</p>
+    </section>
+
+    <section class="grid">
+        <div class="card">
+            <h3>Exterior bounds never move</h3>
+            <p>Vertices on the 2D convex hull of 14 orthographic viewing projections are locked for the entire run — the silhouette from every angle is preserved by construction, not by luck.</p>
+        </div>
+        <div class="card">
+            <h3>Interior release ladder</h3>
+            <p>When the heap stalls above the target, interior detail is released in depth-gated stages: feature-chain corners, then free interior movement, then interior openings. Outer bounds stay locked at every stage.</p>
+        </div>
+        <div class="card">
+            <h3>Openings stay open</h3>
+            <p>Boundary loops for doors, windows and entrances are protected by topology guards; interior loops may only dissolve at the deepest targets — and only if they share no silhouette vertex.</p>
+        </div>
+        <div class="card">
+            <h3>Honest reporting</h3>
+            <p>Every level reports target vs. actual triangles, release stage, and whether identical geometry was shared. A level that can't reach its budget without damage says so — nothing is faked.</p>
+        </div>
+        <div class="card">
+            <h3>Whole-hierarchy LODs</h3>
+            <p>Point at a prefab root and every child renderer gets LODs; tiny pieces (&le;256 tris) reuse the source mesh directly, and one LODGroup is configured automatically.</p>
+        </div>
+        <div class="card">
+            <h3>Texture LODs included</h3>
+            <p>Materials are downscaled alongside geometry so distant LODs save texture memory too — all inside Unity, no external tools, no third-party code.</p>
+        </div>
+    </section>
+
+    <section class="viewer-card">
+        <h2>This exact model — Quality preset results</h2>
+        <table class="report">
+            <thead><tr><th>Level</th><th>Target tris</th><th>Actual tris</th><th>Boundary loops</th><th>Status</th></tr></thead>
+            <tbody>
+                <tr><td>LOD0</td><td>—</td><td>6,203</td><td>210</td><td>source</td></tr>
+                <tr><td>LOD1</td><td>3,877</td><td>3,877</td><td>210</td><td>target reached · interior ×1</td></tr>
+                <tr><td>LOD2</td><td>2,423</td><td>2,969</td><td>210</td><td>preservation limited · interior ×2</td></tr>
+                <tr><td>LOD3</td><td>1,514</td><td>1,996</td><td>18</td><td>preservation limited · interior ×3</td></tr>
+                <tr><td>LOD4</td><td>947</td><td>1,996</td><td>18</td><td>shared — identical to LOD3</td></tr>
+                <tr><td>LOD5</td><td>592</td><td>1,996</td><td>18</td><td>shared — identical to LOD3</td></tr>
+            </tbody>
+        </table>
+        <p class="note">The kit is a modular assembly of hundreds of disconnected sheets. Once every remaining collapse would move a locked silhouette vertex or tear a protected loop, the simplifier stops and reports the floor instead of shredding the facade.</p>
+    </section>
+</main>
+
+<footer>
+    <div class="wrap">
+        <p>ComplexLODs — original quadric-based simplification stack for Unity 6000+. Demo meshes generated from JC_LP_MegaCity Airport_01.</p>
+    </div>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

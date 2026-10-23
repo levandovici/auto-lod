@@ -1,0 +1,79 @@
+:root {
+    --bg: #0d1117;
+    --card: #161c26;
+    --edge: #2a3342;
+    --text: #e6e9ef;
+    --dim: #9aa4b5;
+    --accent: #4da3ff;
+    --accent2: #7fe0b2;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+header {
+    padding: 56px 0 30px;
+    background: linear-gradient(180deg, #131a26 0%, var(--bg) 100%);
+    border-bottom: 1px solid var(--edge);
+}
+h1 { font-size: 42px; font-weight: 800; letter-spacing: -1px; }
+h1 em { font-style: normal; color: var(--accent); }
+.tag { color: var(--dim); max-width: 620px; margin-top: 8px; font-size: 17px; }
+
+main { padding: 28px 0 60px; }
+
+.viewer-card, .card {
+    background: var(--card);
+    border: 1px solid var(--edge);
+    border-radius: 12px;
+    padding: 20px;
+}
+.viewer-card { margin-bottom: 22px; }
+
+.viewer-head {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    justify-content: space-between; align-items: baseline;
+    margin-bottom: 12px;
+}
+h2 { font-size: 19px; font-weight: 700; }
+.stats { display: flex; gap: 14px; font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.stats span:first-child { color: var(--accent2); font-weight: 600; }
+
+#viewport {
+    width: 100%; height: 480px;
+    border-radius: 8px; overflow: hidden;
+    background: #0a0e14;
+    cursor: grab;
+}
+#viewport:active { cursor: grabbing; }
+#viewport canvas { display: block; }
+
+.controls {
+    display: flex; flex-wrap: wrap; gap: 22px; align-items: center;
+    margin-top: 14px; color: var(--dim); font-size: 14px;
+}
+.slider-row { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 260px; }
+.slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+#lodVal { width: 1.5em; text-align: right; font-weight: 700; color: var(--accent2); }
+.controls label { display: flex; gap: 6px; align-items: center; user-select: none; }
+.controls input[type=checkbox] { accent-color: var(--accent); }
+
+.note { margin-top: 12px; font-size: 13px; color: var(--dim); }
+
+.grid {
+    display: grid; gap: 16px; margin-bottom: 22px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.card h3 { font-size: 15px; margin-bottom: 8px; color: var(--accent); }
+.card p { color: var(--dim); font-size: 14px; }
+
+.report { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+.report th, .report td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--edge); }
+.report th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+.report td:last-child { color: var(--accent2); }
+
+footer { border-top: 1px solid var(--edge); padding: 26px 0; color: var(--dim); font-size: 13px; }
