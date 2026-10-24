@@ -3,92 +3,288 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ComplexLODs — architecture-safe LOD generation for Unity</title>
-<meta name="description" content="ComplexLODs generates mesh and texture LODs for Unity while preserving exterior bounds, openings, and silhouettes.">
-<link rel="stylesheet" href="./style.css">
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+<title>ComplexLODs — Feature-Preserving LOD Generation for Unity</title>
+<meta name="description" content="ComplexLODs generates level-of-detail meshes for Unity architecture while preserving exterior bounds, openings and silhouettes. Try the live browser demo — upload an .obj, .fbx, .stl, .glb or .ply and generate LODs in seconds.">
+<meta name="keywords" content="Unity LOD generator, mesh simplification, quadric error metric, level of detail, Unity URP, game optimization, automatic LOD, mesh decimation, Unity editor tool">
+<meta name="robots" content="index, follow">
+<meta name="author" content="MICHITAI">
+<meta name="theme-color" content="#2563eb">
+<link rel="canonical" href="https://lod.michitai.com/">
+<link rel="icon" href="./favicon.svg?v=7" type="image/svg+xml">
+<link rel="manifest" href="./site.webmanifest?v=7">
+
+<!-- Open Graph -->
+<meta property="og:title" content="ComplexLODs — Feature-Preserving LOD Generation for Unity">
+<meta property="og:description" content="Architecture-safe LODs for Unity: exterior bounds locked, openings preserved, honest reporting. Live browser demo included.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://lod.michitai.com/">
+<meta property="og:site_name" content="ComplexLODs">
+<meta property="og:image" content="https://lod.michitai.com/og-cover.png">
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ComplexLODs — Feature-Preserving LOD Generation for Unity">
+<meta name="twitter:description" content="Architecture-safe LODs for Unity: exterior bounds locked, openings preserved, honest reporting. Live browser demo included.">
+<meta name="twitter:image" content="https://lod.michitai.com/og-cover.png">
+<meta name="twitter:site" content="@michitai">
+
+<!-- Structured data: product -->
+<script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "ComplexLODs",
+    "url": "https://lod.michitai.com/",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Unity 6000+",
+    "description": "Feature-preserving level-of-detail generator for Unity. Original probabilistic-quadric simplification stack; exterior bounds locked via silhouette hulls, openings and boundary loops preserved, interior detail released by depth.",
+    "author": { "@type": "Organization", "name": "MICHITAI", "url": "https://lod.michitai.com/" }
+}
+</script>
+
+<!-- Structured data: FAQ -->
+<script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+        { "@type": "Question", "name": "What is ComplexLODs?", "acceptedAnswer": { "@type": "Answer", "text": "ComplexLODs is a level-of-detail (LOD) generator for Unity built on its own simplification stack — no third-party code. It decimates meshes with probabilistic quadric error metrics while locking exterior bounds, protecting openings and feature curves, and reporting honestly when a target can't be reached without damage." } },
+        { "@type": "Question", "name": "Which Unity versions and render pipelines are supported?", "acceptedAnswer": { "@type": "Answer", "text": "The tool targets Unity 6000+ with the Universal Render Pipeline (URP) and runs entirely inside the Unity Editor via Window > ComplexLODs or the MeshRenderer/LODGroup context menus." } },
+        { "@type": "Question", "name": "How is ComplexLODs different from a standard mesh decimator?", "acceptedAnswer": { "@type": "Answer", "text": "Standard decimators minimize geometric error but happily round off silhouettes and weld door and window openings shut. ComplexLODs locks every vertex on the 2D convex hull of 14 viewing projections, guards boundary-loop topology, only lets feature-curve vertices collapse along their chain, and releases interior detail in depth-gated stages — so LODs stay recognizable at distance." } },
+        { "@type": "Question", "name": "Does the web demo upload my mesh to a server?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — generation runs fully server-side so the algorithm is never exposed. Uploads and generated files are stored temporarily only: every job auto-deletes after 30 minutes. Nothing is logged or retained beyond that." } },
+        { "@type": "Question", "name": "What input formats are supported?", "acceptedAnswer": { "@type": "Answer", "text": "Inside Unity the tool works on MeshRenderer hierarchies and prefabs directly, fills LODGroups, and can generate downscaled texture variants per level. The browser demo accepts .obj, .fbx, .stl, .glb/.gltf and .ply files; generated levels download as .obj." } },
+        { "@type": "Question", "name": "How are LOD levels configured?", "acceptedAnswer": { "@type": "Answer", "text": "Three presets mirror typical pipelines: Performance (3 levels, x2.5 reduction), Balanced (4 levels, x2.0) and Quality (6 levels, x1.6). Every level is decimated from the LOD0 source — never chained — so errors do not accumulate, and byte-identical levels share one mesh asset." } },
+        { "@type": "Question", "name": "What happens when a triangle target can't be reached?", "acceptedAnswer": { "@type": "Answer", "text": "The simplifier stops at the preservation floor instead of shredding the model. Each level reports target vs. actual triangles, release stage and boundary-loop counts — a level that can't reach its budget without damage says so." } },
+        { "@type": "Question", "name": "How do I get ComplexLODs or request a feature?", "acceptedAnswer": { "@type": "Answer", "text": "Contact support@michitai.com for licensing, evaluation builds and feature requests." } }
+    ]
+}
+</script>
+
+<link rel="stylesheet" href="./style.css?v=7">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js?v=7" } }</script>
 </head>
 <body>
-<header>
-    <div class="wrap">
-        <h1>Complex<em>LODs</em></h1>
-        <p class="tag">Feature-preserving level-of-detail generation for Unity architecture — exterior bounds locked, interior detail released by depth.</p>
+
+<header class="topbar">
+    <div class="wrap topbar-in">
+        <a class="brand" href="#top">
+            <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 29 27H3Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M9.5 18.5h13M12.4 12.8h7.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span class="brand-name">Complex<em>LODs</em></span>
+        </a>
+        <nav id="siteNav" class="site-nav">
+            <a href="#demo">Live demo</a>
+            <a href="#try">Try your mesh</a>
+            <a href="#features">Features</a>
+            <a href="#results">Results</a>
+            <a href="#faq">FAQ</a>
+        </nav>
+        <a class="btn-nav" href="mailto:support@michitai.com">Contact</a>
+        <button id="navToggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false">
+            <span></span><span></span><span></span>
+        </button>
     </div>
 </header>
 
-<main class="wrap">
-    <section class="viewer-card">
-        <div class="viewer-head">
-            <h2>Live demo — JC_LP_MegaCity Airport_01</h2>
-            <div class="stats">
-                <span id="lodLabel">LOD0 (source)</span>
-                <span id="triLabel">— tris</span>
-                <span id="stageLabel"></span>
+<main id="top">
+
+    <section class="hero">
+        <div class="wrap">
+            <p class="eyebrow">Unity Editor tool · own simplification stack · no third-party code</p>
+            <h1>LODs that keep the building<br><span class="grad">looking like the building.</span></h1>
+            <p class="hero-sub">ComplexLODs decimates meshes with probabilistic quadric error metrics while locking the silhouette, protecting door and window openings, and releasing interior detail only as deep as the target demands.</p>
+            <div class="hero-cta">
+                <a class="btn primary" href="#demo">Watch the live demo</a>
+                <a class="btn ghost" href="#try">Upload a mesh</a>
+            </div>
+            <div class="hero-badges">
+                <span>Unity 6000+ · URP</span>
+                <span>LODGroup + texture variants</span>
+                <span>Server-side engine · files auto-delete in 30 min</span>
             </div>
         </div>
-        <div id="viewport"></div>
-        <div class="controls">
-            <label class="slider-row">
-                <span>LOD level</span>
-                <input id="lodSlider" type="range" min="0" max="5" step="1" value="0" disabled>
-                <span id="lodVal">0</span>
-            </label>
-            <label><input id="wire" type="checkbox"> wireframe</label>
-            <label><input id="spin" type="checkbox" checked> auto-rotate</label>
-        </div>
-        <p class="note">All meshes on this page are real output of the ComplexLODs simplifier on the actual Airport_01 source (Quality preset). LOD3–5 intentionally share one mesh — identical geometry is deduplicated, exactly as the Unity plugin does.</p>
     </section>
 
-    <section class="grid">
-        <div class="card">
-            <h3>Exterior bounds never move</h3>
-            <p>Vertices on the 2D convex hull of 14 orthographic viewing projections are locked for the entire run — the silhouette from every angle is preserved by construction, not by luck.</p>
-        </div>
-        <div class="card">
-            <h3>Interior release ladder</h3>
-            <p>When the heap stalls above the target, interior detail is released in depth-gated stages: feature-chain corners, then free interior movement, then interior openings. Outer bounds stay locked at every stage.</p>
-        </div>
-        <div class="card">
-            <h3>Openings stay open</h3>
-            <p>Boundary loops for doors, windows and entrances are protected by topology guards; interior loops may only dissolve at the deepest targets — and only if they share no silhouette vertex.</p>
-        </div>
-        <div class="card">
-            <h3>Honest reporting</h3>
-            <p>Every level reports target vs. actual triangles, release stage, and whether identical geometry was shared. A level that can't reach its budget without damage says so — nothing is faked.</p>
-        </div>
-        <div class="card">
-            <h3>Whole-hierarchy LODs</h3>
-            <p>Point at a prefab root and every child renderer gets LODs; tiny pieces (&le;256 tris) reuse the source mesh directly, and one LODGroup is configured automatically.</p>
-        </div>
-        <div class="card">
-            <h3>Texture LODs included</h3>
-            <p>Materials are downscaled alongside geometry so distant LODs save texture memory too — all inside Unity, no external tools, no third-party code.</p>
-        </div>
-    </section>
+    <div class="wrap">
+        <section class="panel" id="demo">
+            <div class="panel-head">
+                <h2 id="viewerTitle">Live demo</h2>
+                <div class="stats">
+                    <span id="lodLabel">LOD0 (source)</span>
+                    <span id="triLabel">— tris</span>
+                    <span id="stageLabel"></span>
+                </div>
+            </div>
+            <div id="viewport">
+                <div id="loadBar" hidden><i></i><span id="loadTxt">loading…</span></div>
+            </div>
+            <div class="controls">
+                <label class="slider-row">
+                    <span>LOD level</span>
+                    <input id="lodSlider" type="range" min="0" max="5" step="1" value="0" disabled>
+                    <span id="lodVal">0</span>
+                </label>
+                <label><input id="tex" type="checkbox" checked> textures</label>
+                <label><input id="wire" type="checkbox"> wireframe</label>
+                <label><input id="spin" type="checkbox" checked> auto-rotate</label>
+            </div>
+            <p class="note">Real simplifier output on the demo source mesh (Quality preset) — textured, 196k triangles. LOD5 intentionally shares LOD4's mesh — identical geometry is deduplicated, exactly as the Unity plugin does.</p>
+        </section>
 
-    <section class="viewer-card">
-        <h2>This exact model — Quality preset results</h2>
-        <table class="report">
-            <thead><tr><th>Level</th><th>Target tris</th><th>Actual tris</th><th>Boundary loops</th><th>Status</th></tr></thead>
-            <tbody>
-                <tr><td>LOD0</td><td>—</td><td>6,203</td><td>210</td><td>source</td></tr>
-                <tr><td>LOD1</td><td>3,877</td><td>3,877</td><td>210</td><td>target reached · interior ×1</td></tr>
-                <tr><td>LOD2</td><td>2,423</td><td>2,969</td><td>210</td><td>preservation limited · interior ×2</td></tr>
-                <tr><td>LOD3</td><td>1,514</td><td>1,996</td><td>18</td><td>preservation limited · interior ×3</td></tr>
-                <tr><td>LOD4</td><td>947</td><td>1,996</td><td>18</td><td>shared — identical to LOD3</td></tr>
-                <tr><td>LOD5</td><td>592</td><td>1,996</td><td>18</td><td>shared — identical to LOD3</td></tr>
-            </tbody>
-        </table>
-        <p class="note">The kit is a modular assembly of hundreds of disconnected sheets. Once every remaining collapse would move a locked silhouette vertex or tear a protected loop, the simplifier stops and reports the floor instead of shredding the facade.</p>
-    </section>
+        <section class="panel" id="try">
+            <div class="panel-head">
+                <h2>Try it on your own mesh</h2>
+                <div class="stats"><span id="genStatus"></span></div>
+            </div>
+            <p class="note" style="margin:0 0 12px">Upload a 3D model — <code>.obj</code>, <code>.fbx</code>, <code>.stl</code>, <code>.glb</code>/<code>.gltf</code> or <code>.ply</code>. The same probabilistic-quadric simplifier that ships in the Unity editor runs on our server — the algorithm is never shipped to your browser. Uploads and generated files are stored temporarily and auto-deleted after 30 minutes.</p>
+            <div class="controls">
+                <input id="meshFile" type="file" accept=".obj,.fbx,.stl,.gltf,.glb,.ply" hidden>
+                <label for="meshFile" class="btn ghost">Choose model file</label>
+                <span id="fileName" class="file-dim">no file chosen</span>
+                <select id="preset" class="select">
+                    <option value="performance">Performance — 3 LODs ×2.5</option>
+                    <option value="balanced" selected>Balanced — 4 LODs ×2.0</option>
+                    <option value="quality">Quality — 6 LODs ×1.6</option>
+                </select>
+                <button id="genBtn" class="btn primary" disabled>Generate LODs</button>
+            </div>
+            <div id="genReportWrap" hidden>
+                <table class="report">
+                    <thead><tr><th>Level</th><th>Target tris</th><th>Actual tris</th><th>Boundary loops</th><th>Status</th><th></th></tr></thead>
+                    <tbody id="genReport"></tbody>
+                </table>
+                <div class="controls"><button id="dlAllBtn" class="btn" hidden>Download all (.zip)</button></div>
+                <p class="note">Downloads match the uploaded format — .obj stays .obj, .fbx becomes .fbx, and so on. Levels that can't reach their budget without damaging the exterior or protected openings report "preservation limited" — the same honest reporting as the Unity tool.</p>
+            </div>
+        </section>
+
+        <section id="features">
+            <div class="section-head">
+                <h2>Built for architecture, not just triangles</h2>
+                <p>Kit-bashed buildings are the worst case for naive decimation: hundreds of disconnected sheets, thin trims, door and window openings. ComplexLODs was designed for exactly that.</p>
+            </div>
+            <div class="grid">
+                <div class="card">
+                    <h3>Exterior bounds never move</h3>
+                    <p>Vertices on the 2D convex hull of 14 orthographic viewing projections are locked for the entire run — the silhouette from every angle is preserved by construction, not by luck.</p>
+                </div>
+                <div class="card">
+                    <h3>Interior release ladder</h3>
+                    <p>When the heap stalls above the target, interior detail is released in depth-gated stages: feature-chain corners, then free interior movement, then interior openings. Outer bounds stay locked at every stage.</p>
+                </div>
+                <div class="card">
+                    <h3>Openings stay open</h3>
+                    <p>Boundary loops for doors, windows and entrances are protected by topology guards; interior loops may only dissolve at the deepest targets — and only if they share no silhouette vertex.</p>
+                </div>
+                <div class="card">
+                    <h3>Honest reporting</h3>
+                    <p>Every level reports target vs. actual triangles, release stage, and whether identical geometry was shared. A level that can't reach its budget without damage says so — nothing is faked.</p>
+                </div>
+                <div class="card">
+                    <h3>Whole-hierarchy LODs</h3>
+                    <p>Point at a prefab root and every child renderer gets LODs; tiny pieces (&le;256 tris) reuse the source mesh directly, and one LODGroup is configured automatically.</p>
+                </div>
+                <div class="card">
+                    <h3>Texture LODs included</h3>
+                    <p>Materials are downscaled alongside geometry so distant LODs save texture memory too — all inside Unity, no external tools, no third-party code.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel" id="results">
+            <div class="panel-head"><h2>Reference results — Quality preset</h2></div>
+            <table class="report">
+                <thead><tr><th>Level</th><th>Target tris</th><th>Actual tris</th><th>Boundary loops</th><th>Status</th></tr></thead>
+                <tbody>
+                    <tr><td>LOD0</td><td>—</td><td>196,169</td><td>2,107</td><td>source</td></tr>
+                    <tr><td>LOD1</td><td>122,606</td><td>122,605</td><td>2,108</td><td>target reached · interior ×1</td></tr>
+                    <tr><td>LOD2</td><td>76,629</td><td>76,629</td><td>2,108</td><td>target reached · interior ×1</td></tr>
+                    <tr><td>LOD3</td><td>47,893</td><td>47,892</td><td>2,108</td><td>target reached · interior ×2</td></tr>
+                    <tr><td>LOD4</td><td>29,933</td><td>33,068</td><td>536</td><td>preservation limited · interior ×3</td></tr>
+                    <tr><td>LOD5</td><td>18,708</td><td>33,068</td><td>536</td><td>shared — identical to LOD4</td></tr>
+                </tbody>
+            </table>
+            <p class="note">The kit is a modular assembly of hundreds of disconnected sheets. Once every remaining collapse would move a locked silhouette vertex or tear a protected loop, the simplifier stops and reports the floor instead of shredding the facade.</p>
+        </section>
+
+        <section id="faq">
+            <div class="section-head">
+                <h2>Frequently asked questions</h2>
+                <p>What investors, partners and technical evaluators usually ask first.</p>
+            </div>
+            <div class="faq-list">
+                <details class="faq-item">
+                    <summary>What is ComplexLODs?</summary>
+                    <p>ComplexLODs is a level-of-detail (LOD) generator for Unity built on its own simplification stack — no third-party code. It decimates meshes with probabilistic quadric error metrics while locking exterior bounds, protecting openings and feature curves, and reporting honestly when a target can't be reached without damage.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Which Unity versions and render pipelines are supported?</summary>
+                    <p>The tool targets Unity 6000+ with the Universal Render Pipeline (URP) and runs entirely inside the Unity Editor via <code>Window → ComplexLODs</code> or the MeshRenderer / LODGroup context menus.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>How is ComplexLODs different from a standard mesh decimator?</summary>
+                    <p>Standard decimators minimize geometric error but happily round off silhouettes and weld door and window openings shut. ComplexLODs locks every vertex on the 2D convex hull of 14 viewing projections, guards boundary-loop topology, only lets feature-curve vertices collapse along their chain, and releases interior detail in depth-gated stages — so LODs stay recognizable at distance.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Does the web demo upload my mesh to a server?</summary>
+                    <p>Yes — generation runs fully server-side so the algorithm is never exposed. Uploads and generated files are stored temporarily only: every job auto-deletes after 30 minutes. Nothing is logged or retained beyond that.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>What input formats are supported?</summary>
+                    <p>Inside Unity the tool works on MeshRenderer hierarchies and prefabs directly, fills LODGroups, and can generate downscaled texture variants per level. The browser demo accepts <code>.obj</code>, <code>.fbx</code>, <code>.stl</code>, <code>.glb</code>/<code>.gltf</code> and <code>.ply</code>; generated levels download as <code>.obj</code>.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>How are LOD levels configured?</summary>
+                    <p>Three presets mirror typical pipelines: Performance (3 levels, ×2.5 reduction), Balanced (4 levels, ×2.0) and Quality (6 levels, ×1.6). Every level is decimated from the LOD0 source — never chained — so errors don't accumulate, and byte-identical levels share one mesh asset.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>What happens when a triangle target can't be reached?</summary>
+                    <p>The simplifier stops at the preservation floor instead of shredding the model. Each level reports target vs. actual triangles, release stage and boundary-loop counts — a level that can't reach its budget without damage says so.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>How do I get ComplexLODs or request a feature?</summary>
+                    <p>Contact <a href="mailto:support@michitai.com">support@michitai.com</a> for licensing, evaluation builds and feature requests.</p>
+                </details>
+            </div>
+        </section>
+
+        <section class="cta">
+            <h2>Ship cities that still read as cities at LOD5.</h2>
+            <p>Feature-preserving LOD generation, inside Unity, with numbers you can audit.</p>
+            <a class="btn primary light" href="mailto:support@michitai.com">Get in touch</a>
+        </section>
+    </div>
 </main>
 
-<footer>
-    <div class="wrap">
-        <p>ComplexLODs — original quadric-based simplification stack for Unity 6000+. Demo meshes generated from JC_LP_MegaCity Airport_01.</p>
+<footer class="footer">
+    <div class="wrap footer-grid">
+        <div class="footer-brand">
+            <span class="brand-name">Complex<em>LODs</em></span>
+            <p>Feature-preserving level-of-detail generation for Unity. Original quadric-based simplification stack — no third-party code.</p>
+        </div>
+        <div class="footer-col">
+            <h4>Product</h4>
+            <a href="#demo">Live demo</a>
+            <a href="#try">Try your mesh</a>
+            <a href="#features">Features</a>
+            <a href="#results">Results</a>
+        </div>
+        <div class="footer-col">
+            <h4>Resources</h4>
+            <a href="#faq">FAQ</a>
+            <a href="./llms.txt">llms.txt</a>
+            <a href="./llms-full.txt">Machine-readable docs</a>
+        </div>
+        <div class="footer-col">
+            <h4>Contact</h4>
+            <a href="mailto:support@michitai.com">support@michitai.com</a>
+            <a href="https://michitai.com">MICHITAI</a>
+        </div>
+    </div>
+    <div class="wrap footer-base">
+        <p>© 2026 MICHITAI — ComplexLODs, made by Nichita Levandovici.</p>
     </div>
 </footer>
 
-<script type="module" src="./app.js"></script>
+<script type="module" src="./app.js?v=7"></script>
 </body>
 </html>

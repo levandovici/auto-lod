@@ -81,3 +81,10 @@ Assets/JC_LP_MegaCity.meta
 
 # ComplexLODs output (regenerable)
 Assets/ComplexLODs/Generated*
+
+# Web job store + generated test artifacts (ephemeral)
+Web/store/
+Web/test/out/
+Web/test/cube.*
+Web/test/tri_bin.stl
+Web/test/tetra.*

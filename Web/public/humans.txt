@@ -1,0 +1,10 @@
+/* TEAM */
+Author: Nichita Levandovici (MICHITAI)
+Contact: support@michitai.com
+From: Republic of Moldova
+
+/* SITE */
+Product: ComplexLODs — feature-preserving LOD generation for Unity
+Stack: Unity 6000+ / URP editor tool; static demo site (Node.js, three.js)
+Simplification stack: original probabilistic-quadric QEM — no third-party code
+Last update: 2026-10-24

@@ -1,0 +1,114 @@
+# ComplexLODs — complete reference (lod.michitai.com)
+
+ComplexLODs is a feature-preserving level-of-detail generator for Unity
+6000+ (URP). It ships as an editor extension with its own simplification
+stack — no third-party code — plus this static demo site where the same
+algorithm runs in the browser. Copyright (c) 2026 MICHITAI; proprietary.
+Contact: support@michitai.com.
+
+## Architecture
+
+Editor stack (C#, Assets/ComplexLODs/Editor):
+
+- Quadric — Garland-Heckbert symmetric 4x4 error quadric, plus the
+  probabilistic triangle quadric of Trettner & Kobbelt 2020 (expected QEM
+  under isotropic Gaussian vertex noise, sigma = 5% of mean edge length,
+  area-normalised so fine detail stays numerically visible next to large
+  flat faces).
+- MeshGraph — position-welded vertex graph: welded vertices, corners and
+  wedges (per-corner attribute sets for normals/tangents/UVs/color/skin
+  weights), undirected edge map, boundary and seam detection.
+- QEMSimplifier — edge-collapse simplifier driven by a min-heap of quadric
+  costs.
+
+Web stack (this site, zero dependencies):
+
+- engine/ — server-side only, never served: simplifier.js (JS port of the
+  editor Core), loaders.js + fbx.js (OBJ/FBX/STL/GLB/PLY parsing),
+  exporters.js (OBJ/STL/PLY/GLB/FBX-ASCII writers), zip.js (STORED zip
+  writer), jobworker.mjs (worker_threads job runner).
+- public/js/objio.js — Wavefront OBJ parse/serialize; the only parser
+  shipped to the browser (used for preview display).
+- public/app.js — three.js viewer + upload UI.
+- server.js — static files + the generation API.
+
+Input formats: OBJ, FBX (binary 7.x incl. zlib-compressed properties — model
+node TRS baked in, and ASCII without transforms), STL (ascii+binary), GLB and .gltf
+(embedded/data-URI buffers; node TRS transforms applied; triangle
+primitives only; sparse accessors and external .bin unsupported), PLY
+(ascii + binary_little_endian; vertex normals/uvs).
+
+## Collapse rules
+
+- Placement is constrained: collapse targets are the edge endpoints, plus
+  the midpoint only on edges still coinciding with a real source edge
+  (phantom tracking: inherited/moved edges are phantom).
+- Feature chains: a vertex on a boundary/crease/seam/submesh/non-manifold
+  edge may only collapse along the chain. Straight-run vertices can be
+  consumed; corners and junctions stay; non-manifold endpoints are locked.
+- Moved vertices interpolate normals/tangents/UVs/color along the source
+  edge's wedge chart; a move without an unambiguous attribute partner (or
+  with differing skin weights) is rejected.
+- Integrity checks never relax: link condition, duplicate-face rejection,
+  boundary-loop topology guard, flip/sliver(shape-factor)/growth rejection,
+  collapse distance bounded by 4x local feature scale.
+- Silhouette locks: vertices on the 2D convex hull of any of 14 viewing
+  projections (6 axes + 8 body diagonals) are locked for the whole run.
+- Interior-release ladder gated by target depth (target/source ratio):
+  >=0.75 stage 0 only; >=0.5 stage 1 (interior chain corners); >=0.25 stage
+  2 (interior verts move freely); <0.25 stage 3 (interior boundary loops
+  may dissolve if they share no silhouette vertex). releaseStage is
+  reported per level.
+
+## Options (SimplifyOptions)
+
+targetTriangleCount, weldTolerance, boundaryWeight (500), lockBoundaries,
+creaseAngle (35 deg), creaseWeight (25), seamWeight (40), extremesWeight
+(6) / extremesPower (3) radial extremity importance, lockTopVertices,
+lockBoundsExtremes, useVertexColorImportance + vertexColorChannel +
+importanceMax (10), preventFlips, neverCollapseLocked, preserveTopology
+(link condition), preserveBoundaryLoops, recalculateNormals, progress /
+cancelRequested callbacks.
+
+## Pipeline behaviour
+
+- Per-level targets: sourceTriangles / reductionRate^level; presets
+  Performance 3x2.5, Balanced 4x2.0, Quality 6x1.6; custom ratios allowed.
+- MinSimplifyTris = 256: tiny children reuse the source mesh.
+- Levels are always decimated from the LOD0 source — never chained.
+- Identical-geometry levels share one mesh asset and one renderer object.
+- Regeneration destroys prior generated clones; authored LOD content is
+  only disabled, never deleted.
+- Preflight drops zero-area source triangles.
+- Texture LODs: optional per-level downscaled textures + material variants.
+- Output: per-level report (target vs. actual tris, collapses, release
+  stage, max/rms error, boundary-loop counts, warnings).
+
+## Web demo API
+
+POST /api/generate?preset=balanced — raw model bytes in the body,
+X-File-Name header; responds application/x-ndjson stream:
+'parsed' {vertices, triangles}, 'progress' {level, collapses, srcTris,
+alive, target}, 'level' {index}, 'done' {id, levels, expiresAt, srcTris,
+srcVerts}, 'error' {message}. Limits: 64 MB upload, one running job per
+connection, ~30 jobs/hour/IP.
+
+GET /api/preview?id&i — LOD i as .glb (viewer preview; parsed client-side
+by the tiny public/js/glbmini.js reader).
+GET /api/file?id&i — LOD i in the uploaded format (attachment).
+GET /api/zip?id — all levels in one .zip.
+
+Lifetime: uploads and generated files live under store/<jobId> and are
+deleted after TTL (default 30 min, env LODS_TTL_MIN); a sweeper also
+evicts oldest-first if the store exceeds 1 GB. Expired jobs answer 410.
+
+## Files on this site
+
+- /            — landing page: live demo, .obj upload, features, results, FAQ
+- /llms.txt    — this index
+- /llms-full.txt — this file
+- /robots.txt, /sitemap.xml, /humans.txt
+- /favicon.svg, /site.webmanifest, /og-cover.png
+- /lods/airport_lod{0..3}.obj — real demo meshes
+- /js/simplifier.js, /js/objio.js — browser simplifier
+- /worker.js   — generation worker

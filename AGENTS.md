@@ -40,6 +40,19 @@ temporarily into `Assets/ComplexLODs/Editor` to run inside Unity) plus the
 offline coverage/boundary measurement and report scripts. See
 `Tools/Validation/README.md` before rerunning the MegaCity matrix.
 
+## Web demo site
+
+`Web/` — zero-dependency Node site (`node Web/server.js`). `public/` = served
+statics (viewer, `js/objio.js` only). `Web/engine/` = the JS port of
+`Core/*.cs` + format loaders (`loaders.js`, `fbx.js`), writers
+(`exporters.js`, `zip.js`) and `jobworker.mjs` — **server-side only, never
+served**. Upload → `POST /api/generate` (NDJSON stream) → results via
+`GET /api/preview|file|zip`; jobs land in `Web/store/<uuid>` and auto-delete
+after `LODS_TTL_MIN` (default 30 min) or when the 1 GB store cap evicts
+oldest. Presets mirror `ComplexLODProfile`. Bump the `?v=` asset query in
+`index.html`/`app.js` together on every deploy. Cross-validate the port with
+`node Web/test/compare.mjs` (diffs against `lodharness synth` output).
+
 ## Compile verification
 
 The generated csproj references an uninstalled Unity version. To compile-check

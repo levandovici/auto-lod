@@ -1,0 +1,60 @@
+# ComplexLODs (lod.michitai.com)
+
+> Feature-preserving level-of-detail (LOD) generator for Unity. Built on an
+> original probabilistic-quadric edge-collapse simplifier — no third-party
+> code. Locks exterior silhouettes, protects door/window openings and feature
+> curves, and releases interior detail in depth-gated stages. Proprietary;
+> contact support@michitai.com.
+
+Author: Nichita Levandovici (MICHITAI), Republic of Moldova
+Contact: support@michitai.com
+
+## What it does
+
+- Generates LOD chains for Unity MeshRenderer hierarchies and prefabs,
+  fills LODGroup components, and can produce per-level texture variants.
+- Every level is decimated from the LOD0 source mesh — never chained — so
+  errors do not accumulate.
+- Byte-identical consecutive levels share one mesh asset.
+- Meshes with <= 256 triangles skip decimation and reuse the source.
+
+## Preservation model
+
+- Exterior shell: vertices on the 2D convex hull of 14 viewing projections
+  are locked for the whole run — outer bounds can never move.
+- Feature chains: boundary, sharp-crease, UV/normal-seam, submesh-change and
+  non-manifold edges collapse only along the chain; corners and junctions
+  stay; non-manifold endpoints are locked.
+- Interior-release ladder: when reduction stalls above the target, interior
+  detail is released in stages gated by target depth (>=75% fully preserved,
+  >=50% interior chain corners, >=25% interior free, <25% interior boundary
+  loops may dissolve). Locks and integrity checks are never relaxed.
+- Integrity: link condition, duplicate-face rejection, boundary-loop topology
+  guard, flip/sliver/growth rejection, bounded collapse distance.
+- Honest reporting: unreachable targets are reported, never faked.
+
+## Presets (mirror ComplexLODProfile)
+
+- Performance: 3 LODs, x2.5 reduction per level
+- Balanced: 4 LODs, x2.0 per level
+- Quality: 6 LODs, x1.6 per level
+
+## Web demo
+
+- Live viewer with real output on Ship Pinnace (Poly Haven, CC0).
+- Upload a model (.obj, .fbx binary or ascii, .stl, .glb/.gltf with embedded
+  buffers, .ply ascii or binary-LE) via POST /api/generate: the same
+  simplifier runs server-side (worker threads) — the algorithm is never
+  shipped to the browser. Generated levels download in the same format as
+  the input (single files or all-in-one .zip). Uploads and generated files
+  are stored under a job id and auto-deleted after 30 minutes.
+
+## Machine-readable
+
+- [Full reference](https://lod.michitai.com/llms-full.txt): algorithm details,
+  options, pipeline behaviour and demo protocol in one file.
+
+## Links
+
+- [Home](https://lod.michitai.com/)
+- Contact: support@michitai.com

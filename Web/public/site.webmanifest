@@ -1,0 +1,10 @@
+{
+    "name": "ComplexLODs",
+    "short_name": "ComplexLODs",
+    "description": "Feature-preserving LOD generation for Unity — live browser demo.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#f4f6fa",
+    "theme_color": "#2563eb",
+    "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
