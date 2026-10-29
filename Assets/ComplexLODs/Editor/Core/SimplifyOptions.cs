@@ -48,6 +48,14 @@ namespace ComplexLODs.Core
         [Tooltip("Maximum weight multiplier applied where the mask is 1.")]
         public float importanceMax = 10f;
 
+        [Header("Interior removal")]
+        [Tooltip("Classify geometry invisible from any outside view (multi-direction conservative raster + ray-escape rescue) as interior.")]
+        public bool interiorRemoval = true;
+        [Tooltip("Delete fully-interior triangles up front; the cut rims become protected boundary loops.")]
+        public bool stripInterior = true;
+        [Tooltip("Cost multiplier for edges whose both endpoints are interior - interior detail is consumed first.")]
+        [Range(0.001f, 1f)] public float interiorCostBias = 0.05f;
+
         [Header("Validity")]
         [Tooltip("Reject collapses that would flip a triangle normal.")]
         public bool preventFlips = true;
@@ -57,6 +65,10 @@ namespace ComplexLODs.Core
         public bool preserveTopology = true;
         [Tooltip("Reject collapses that merge two boundary loops, split a loop in two, or annihilate a small opening.")]
         public bool preserveBoundaryLoops = true;
+        [Tooltip("Exterior openings smaller than this fraction of the model's bounding diagonal may dissolve at the deepest release stage (portholes, railing gaps). 0 = exterior openings never dissolve.")]
+        [Range(0f, 0.2f)] public float dissolveOpeningBelow = 0.01f;
+        [Tooltip("Minimum triangles each connected component keeps — thin parts (masts, ropes, railings) degrade to a stub instead of vanishing. 0 = components may collapse entirely.")]
+        public int componentMinTris = 8;
 
         [Header("Output")]
         [Tooltip("Recalculate smooth normals instead of carrying interpolated ones.")]
@@ -81,6 +93,9 @@ namespace ComplexLODs.Core
         public bool reachedTarget;
         public bool cancelled;
         public int releaseStage;
+        public int interiorVertices;
+        public int interiorTriangles;
+        public int strippedInteriorTriangles;
         public double elapsedMs;
         public string warning;
     }

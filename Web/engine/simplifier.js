@@ -204,6 +204,8 @@ class MeshGraph {
         if (!this.triAlive[tri]) return;
         this.triAlive[tri] = false;
         this.aliveTris--;
+        if (this.compTris)
+            this.compTris[this.vertComp[this.cornerVert[this.triCorners[tri * 3]]]]--;
     }
 
     resolveWedge(wedge) {
@@ -386,6 +388,31 @@ class MeshGraph {
         for (let i = 0; i < vCount; i++)
             g.localScale[i] = eCnt[i] > 0 ? eSum[i] / eCnt[i] : gMean;
 
+        // Connected components: union-find over alive edges. Thin parts
+        // (masts, ropes, railings) are their own components, so a floor on
+        // the alive-triangle count degrades them to a legal stub instead of
+        // letting them telescope away entirely.
+        const uf = new Int32Array(vCount);
+        for (let i = 0; i < vCount; i++) uf[i] = i;
+        const find = (x) => { while (uf[x] !== x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; };
+        for (const e of g.edges.values()) {
+            if (e.removed) continue;
+            const ra = find(e.a), rb = find(e.b);
+            if (ra !== rb) uf[rb] = ra;
+        }
+        const compIdx = new Map();
+        g.vertComp = new Int32Array(vCount);
+        for (let i = 0; i < vCount; i++) {
+            const r = find(i);
+            let ci = compIdx.get(r);
+            if (ci === undefined) { ci = compIdx.size; compIdx.set(r, ci); }
+            g.vertComp[i] = ci;
+        }
+        g.compTris = new Int32Array(compIdx.size);
+        for (let t = 0; t < g.triAlive.length; t++)
+            if (g.triAlive[t]) g.compTris[g.vertComp[g.cornerVert[g.triCorners[t * 3]]]]++;
+        g.compOrig = Int32Array.from(g.compTris);
+
         return g;
     }
 }
@@ -506,6 +533,220 @@ class MinHeap {
     }
 }
 
+// --- exterior/interior classification (port of Visibility.cs) --------------------
+// A source triangle is "exterior" when it wins at least one pixel in an
+// unculled conservative z-buffer render from any sampled direction; a vertex
+// is exterior when any incident triangle is. Classification is one-sided
+// (hiding an interior feature is harmless) so a ray-escape rescue pass on a
+// uniform grid closes the dangerous exterior->interior direction.
+const VIS_RES = 384;
+const VIS_FIB_DIRS = 42;
+const VIS_DILATE_PX = 1.25;
+const VIS_GRID_MAX_DIM = 96;
+
+function visibilityDirections() {
+    const dirs = [v3(1, 0, 0), v3(-1, 0, 0), v3(0, 1, 0), v3(0, -1, 0), v3(0, 0, 1), v3(0, 0, -1)];
+    const golden = 2.399963229728653;
+    for (let i = 0; i < VIS_FIB_DIRS; i++) {
+        const y = 1 - 2 * (i + 0.5) / VIS_FIB_DIRS;
+        const r = Math.sqrt(Math.max(0, 1 - y * y));
+        const phi = i * golden;
+        dirs.push(v3(r * Math.cos(phi), y, r * Math.sin(phi)));
+    }
+    return dirs;
+}
+
+function rasterizePass(g, dir, proj, zbuf, exteriorTri) {
+    const d = norm3(dir);
+    const up = Math.abs(d.y) < 0.9 ? V3_UP : V3_RIGHT;
+    const u = norm3(cross3(d, up));
+    const v = cross3(d, u);
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    for (let i = 0; i < g.pos.length; i++) {
+        const p = g.pos[i];
+        const x = dot3(p, u), y = dot3(p, v), z = dot3(p, d);
+        proj[i] = v3(x, y, z);
+        if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+        if (y < mny) mny = y; if (y > mxy) mxy = y;
+    }
+    const span = Math.max(mxx - mnx, mxy - mny);
+    if (span < 1e-12) return;
+    const scale = (VIS_RES - 4) / span;
+    const ox = 2 - mnx * scale, oy = 2 - mny * scale;
+    const zeps = Math.max(1e-6, span * 1e-4);
+    zbuf.fill(-Infinity);
+    for (let t = 0; t < g.triSub.length; t++) {
+        if (!g.triAlive[t]) continue;
+        const A = proj[g.cornerVert[g.triCorners[t * 3]]];
+        const B = proj[g.cornerVert[g.triCorners[t * 3 + 1]]];
+        const C = proj[g.cornerVert[g.triCorners[t * 3 + 2]]];
+        const ax = A.x * scale + ox, ay = A.y * scale + oy;
+        const bx = B.x * scale + ox, by = B.y * scale + oy;
+        const cx = C.x * scale + ox, cy = C.y * scale + oy;
+        const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (Math.abs(area2) < 1e-7) continue;
+        const x0 = Math.max(0, Math.floor(Math.min(ax, Math.min(bx, cx)) - VIS_DILATE_PX));
+        const x1 = Math.min(VIS_RES - 1, Math.floor(Math.max(ax, Math.max(bx, cx)) + VIS_DILATE_PX));
+        const y0 = Math.max(0, Math.floor(Math.min(ay, Math.min(by, cy)) - VIS_DILATE_PX));
+        const y1 = Math.min(VIS_RES - 1, Math.floor(Math.max(ay, Math.max(by, cy)) + VIS_DILATE_PX));
+        const lenA = Math.hypot(bx - cx, by - cy);
+        const lenB = Math.hypot(cx - ax, cy - ay);
+        const lenC = Math.hypot(ax - bx, ay - by);
+        const inv = 1 / area2;
+        const aa = Math.abs(area2);
+        const tolA = lenA > 1e-6 ? VIS_DILATE_PX * lenA / aa : 1;
+        const tolB = lenB > 1e-6 ? VIS_DILATE_PX * lenB / aa : 1;
+        const tolC = lenC > 1e-6 ? VIS_DILATE_PX * lenC / aa : 1;
+        for (let py = y0; py <= y1; py++) {
+            const qy = py + 0.5, row = py * VIS_RES;
+            for (let px = x0; px <= x1; px++) {
+                const qx = px + 0.5;
+                const w0 = ((bx - qx) * (cy - qy) - (by - qy) * (cx - qx)) * inv;
+                const w1 = ((cx - qx) * (ay - qy) - (cy - qy) * (ax - qx)) * inv;
+                const w2 = 1 - w0 - w1;
+                if (w0 < -tolA || w1 < -tolB || w2 < -tolC) continue;
+                const z = w0 * A.z + w1 * B.z + w2 * C.z;
+                const zi = row + px;
+                if (z > zbuf[zi] + zeps) { zbuf[zi] = z; exteriorTri[t] = 1; }
+                else if (z > zbuf[zi] - zeps) exteriorTri[t] = 1;
+            }
+        }
+    }
+}
+
+function buildTriGrid(g) {
+    const mn = { x: Infinity, y: Infinity, z: Infinity };
+    const mx = { x: -Infinity, y: -Infinity, z: -Infinity };
+    for (const p of g.pos) {
+        if (p.x < mn.x) mn.x = p.x; if (p.x > mx.x) mx.x = p.x;
+        if (p.y < mn.y) mn.y = p.y; if (p.y > mx.y) mx.y = p.y;
+        if (p.z < mn.z) mn.z = p.z; if (p.z > mx.z) mx.z = p.z;
+    }
+    const ext = Math.max(mx.x - mn.x, Math.max(mx.y - mn.y, mx.z - mn.z));
+    const cell = Math.max(ext / VIS_GRID_MAX_DIM, ext * 1e-4);
+    const gr = {
+        origin: mn, cell,
+        nx: Math.max(1, Math.min(VIS_GRID_MAX_DIM, Math.floor((mx.x - mn.x) / cell) + 1)),
+        ny: Math.max(1, Math.min(VIS_GRID_MAX_DIM, Math.floor((mx.y - mn.y) / cell) + 1)),
+        nz: Math.max(1, Math.min(VIS_GRID_MAX_DIM, Math.floor((mx.z - mn.z) / cell) + 1)),
+        stamp: new Int32Array(g.triSub.length)
+    };
+    gr.index = (x, y, z) => (z * gr.ny + y) * gr.nx + x;
+    gr.cells = new Array(gr.nx * gr.ny * gr.nz).fill(null);
+    const cellOf = (f, n) => { const i = f | 0; return i < 0 ? 0 : i >= n ? n - 1 : i; };
+    gr.cellOf = cellOf;
+    for (let t = 0; t < g.triSub.length; t++) {
+        if (!g.triAlive[t]) continue;
+        const a = g.pos[g.cornerVert[g.triCorners[t * 3]]];
+        const b = g.pos[g.cornerVert[g.triCorners[t * 3 + 1]]];
+        const c = g.pos[g.cornerVert[g.triCorners[t * 3 + 2]]];
+        const x0 = cellOf((Math.min(a.x, Math.min(b.x, c.x)) - mn.x) / cell, gr.nx);
+        const x1 = cellOf((Math.max(a.x, Math.max(b.x, c.x)) - mn.x) / cell, gr.nx);
+        const y0 = cellOf((Math.min(a.y, Math.min(b.y, c.y)) - mn.y) / cell, gr.ny);
+        const y1 = cellOf((Math.max(a.y, Math.max(b.y, c.y)) - mn.y) / cell, gr.ny);
+        const z0 = cellOf((Math.min(a.z, Math.min(b.z, c.z)) - mn.z) / cell, gr.nz);
+        const z1 = cellOf((Math.max(a.z, Math.max(b.z, c.z)) - mn.z) / cell, gr.nz);
+        for (let z = z0; z <= z1; z++)
+            for (let y = y0; y <= y1; y++)
+                for (let x = x0; x <= x1; x++) {
+                    const ci = gr.index(x, y, z);
+                    if (!gr.cells[ci]) gr.cells[ci] = [];
+                    gr.cells[ci].push(t);
+                }
+    }
+    return gr;
+}
+
+function rayTri(o, d, a, b, c, eps) {
+    const e1 = sub3(b, a), e2 = sub3(c, a);
+    const pv = cross3(d, e2);
+    const det = dot3(e1, pv);
+    if (Math.abs(det) < 1e-12) return false;
+    const inv = 1 / det;
+    const tv = sub3(o, a);
+    const uu = dot3(tv, pv) * inv;
+    if (uu < -1e-5 || uu > 1.00001) return false;
+    const qv = cross3(tv, e1);
+    const vv = dot3(d, qv) * inv;
+    if (vv < -1e-5 || uu + vv > 1.00001) return false;
+    return dot3(e2, qv) * inv > eps;
+}
+
+// True when the ray leaves the grid without hitting a non-incident triangle.
+function escapes(g, gr, o, d, skipVert, eps, stampId) {
+    const cellOf = gr.cellOf;
+    let x = cellOf((o.x - gr.origin.x) / gr.cell, gr.nx);
+    let y = cellOf((o.y - gr.origin.y) / gr.cell, gr.ny);
+    let z = cellOf((o.z - gr.origin.z) / gr.cell, gr.nz);
+    const sx = d.x > 0 ? 1 : -1, sy = d.y > 0 ? 1 : -1, sz = d.z > 0 ? 1 : -1;
+    const tdx = Math.abs(d.x) > 1e-9 ? gr.cell / Math.abs(d.x) : Infinity;
+    const tdy = Math.abs(d.y) > 1e-9 ? gr.cell / Math.abs(d.y) : Infinity;
+    const tdz = Math.abs(d.z) > 1e-9 ? gr.cell / Math.abs(d.z) : Infinity;
+    let tmx = Math.abs(d.x) > 1e-9
+        ? ((d.x > 0 ? (x + 1) * gr.cell + gr.origin.x - o.x : o.x - (x * gr.cell + gr.origin.x)) / Math.abs(d.x)) : Infinity;
+    let tmy = Math.abs(d.y) > 1e-9
+        ? ((d.y > 0 ? (y + 1) * gr.cell + gr.origin.y - o.y : o.y - (y * gr.cell + gr.origin.y)) / Math.abs(d.y)) : Infinity;
+    let tmz = Math.abs(d.z) > 1e-9
+        ? ((d.z > 0 ? (z + 1) * gr.cell + gr.origin.z - o.z : o.z - (z * gr.cell + gr.origin.z)) / Math.abs(d.z)) : Infinity;
+    let guard = gr.nx + gr.ny + gr.nz + 4;
+    while (guard-- > 0) {
+        const cell = gr.cells[gr.index(x, y, z)];
+        if (cell) {
+            for (const t of cell) {
+                if (gr.stamp[t] === stampId) continue;
+                gr.stamp[t] = stampId;
+                let incident = false;
+                for (let k = 0; k < 3; k++)
+                    if (g.cornerVert[g.triCorners[t * 3 + k]] === skipVert) { incident = true; break; }
+                if (incident) continue;
+                const a = g.pos[g.cornerVert[g.triCorners[t * 3]]];
+                const b = g.pos[g.cornerVert[g.triCorners[t * 3 + 1]]];
+                const c = g.pos[g.cornerVert[g.triCorners[t * 3 + 2]]];
+                if (rayTri(o, d, a, b, c, eps)) return false;
+            }
+        }
+        if (tmx <= tmy && tmx <= tmz) { x += sx; tmx += tdx; if (x < 0 || x >= gr.nx) return true; }
+        else if (tmy <= tmz) { y += sy; tmy += tdy; if (y < 0 || y >= gr.ny) return true; }
+        else { z += sz; tmz += tdz; if (z < 0 || z >= gr.nz) return true; }
+    }
+    return true;
+}
+
+function exteriorVertices(g) {
+    const exteriorTri = new Uint8Array(g.triSub.length);
+    const dirs = visibilityDirections();
+    const proj = new Array(g.pos.length);
+    const zbuf = new Float64Array(VIS_RES * VIS_RES);
+    for (const d of dirs) rasterizePass(g, d, proj, zbuf, exteriorTri);
+
+    const exterior = new Uint8Array(g.pos.length);
+    for (let v = 0; v < g.pos.length; v++)
+        for (const t of g.vertTris[v])
+            if (g.triAlive[t] && exteriorTri[t]) { exterior[v] = 1; break; }
+
+    // Rescue: any vertex a ray can escape from is visible from outside even
+    // when the raster grid missed it (thin antennae, wires, lone spikes).
+    const gr = buildTriGrid(g);
+    const diag = gr.cell * Math.sqrt(gr.nx * gr.nx + gr.ny * gr.ny + gr.nz * gr.nz);
+    const eps = Math.max(1e-5, diag * 1e-5);
+    let stampId = 0;
+    for (let vIdx = 0; vIdx < g.pos.length; vIdx++) {
+        if (exterior[vIdx]) continue;
+        const vt = g.vertTris[vIdx];
+        let hasAlive = false;
+        for (const t of vt) if (g.triAlive[t]) { hasAlive = true; break; }
+        if (!hasAlive) continue;
+        for (const d of dirs) {
+            if (escapes(g, gr, add3(g.pos[vIdx], scale3(d, eps * 4)), d, vIdx, eps, ++stampId)) {
+                exterior[vIdx] = 1;
+                for (const t of vt) if (g.triAlive[t]) exteriorTri[t] = 1;
+                break;
+            }
+        }
+    }
+    return { exterior, exteriorTri };
+}
+
 // --- options / result ------------------------------------------------------------
 export function defaultOptions() {
     return {
@@ -523,6 +764,11 @@ export function defaultOptions() {
         useVertexColorImportance: false,
         vertexColorChannel: 3,
         importanceMax: 10,
+        interiorRemoval: true,
+        stripInterior: true,
+        interiorCostBias: 0.05,
+        dissolveOpeningBelow: 0.01,
+        componentMinTris: 8,
         preventFlips: true,
         neverCollapseLocked: true,
         preserveTopology: true,
@@ -548,6 +794,7 @@ export function simplify(source, opt) {
         maxError: 0, rmsError: 0,
         sourceBoundaryComponents: 0, resultBoundaryComponents: 0,
         reachedTarget: false, cancelled: false, releaseStage: 0,
+        interiorVertices: 0, interiorTriangles: 0, strippedInteriorTriangles: 0,
         elapsedMs: 0, warning: null
     };
     if (!source) { res.warning = 'Null mesh'; return res; }
@@ -556,6 +803,50 @@ export function simplify(source, opt) {
     res.sourceTriangles = g.aliveTris;
     res.sourceVertices = g.pos.length;
     res.sourceBoundaryComponents = g.countBoundaryComponents();
+
+    // Exterior shell: hull verts of the viewing projections stay locked for
+    // the whole run so the outer bounds can never move.
+    const silhouette = markSilhouette(g);
+
+    // Interior classification: geometry no outside view can see is interior.
+    // Interior verts collapse under fully relaxed rules and interior-interior
+    // edges are cheap; with stripInterior the fully-interior triangles are
+    // deleted outright and the cut rims become protected boundary loops.
+    let interior = null;
+    if (opt.interiorRemoval) {
+        const { exterior } = exteriorVertices(g);
+        interior = new Uint8Array(g.pos.length);
+        for (let i = 0; i < interior.length; i++) {
+            interior[i] = (!exterior[i] && !silhouette[i]) ? 1 : 0;
+            if (interior[i]) res.interiorVertices++;
+        }
+        for (let t = 0; t < g.triSub.length; t++) {
+            if (!g.triAlive[t]) continue;
+            if (interior[g.cornerVert[g.triCorners[t * 3]]] &&
+                interior[g.cornerVert[g.triCorners[t * 3 + 1]]] &&
+                interior[g.cornerVert[g.triCorners[t * 3 + 2]]])
+                res.interiorTriangles++;
+        }
+        if (opt.stripInterior) {
+            for (let t = 0; t < g.triSub.length; t++) {
+                if (!g.triAlive[t]) continue;
+                const v0 = g.cornerVert[g.triCorners[t * 3]];
+                const v1 = g.cornerVert[g.triCorners[t * 3 + 1]];
+                const v2 = g.cornerVert[g.triCorners[t * 3 + 2]];
+                if (!interior[v0] || !interior[v1] || !interior[v2]) continue;
+                g.removeTri(t);
+                res.strippedInteriorTriangles++;
+            }
+            if (res.strippedInteriorTriangles > 0) {
+                for (const e of g.edges.values()) {
+                    for (let i = e.tris.length - 1; i >= 0; i--)
+                        if (!g.triAlive[e.tris[i]]) e.tris.splice(i, 1);
+                    if (e.tris.length === 0) e.removed = true;
+                    else e.boundary = e.tris.length === 1;
+                }
+            }
+        }
+    }
 
     const vertEdges = buildVertexEdges(g);
     applyVertexWeightsAndLocks(g, source, opt);
@@ -569,7 +860,7 @@ export function simplify(source, opt) {
             g.locked[edge.a] = g.locked[edge.b] = 1;
     }
 
-    const silhouette = markSilhouette(g);
+    // Silhouette verts stay locked for the whole run.
     for (let i = 0; i < silhouette.length; i++)
         if (silhouette[i]) g.locked[i] = 1;
 
@@ -577,7 +868,7 @@ export function simplify(source, opt) {
     const heap = new MinHeap();
     for (const e of g.edges.values()) {
         if (e.removed) continue;
-        const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, 0);
+        const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, 0);
         if (r.cost !== Infinity) heap.push(r.cost, e, e.version);
     }
     const target = Math.max(0, opt.targetTriangleCount | 0);
@@ -585,9 +876,25 @@ export function simplify(source, opt) {
     // Interior-release ladder (see QEMSimplifier.cs for the full contract):
     //   0 - full preservation, 1 - interior chain corners, 2 - free interior,
     //   3 - interior boundary loops may dissolve. Silhouette locks and all
-    //   integrity checks are never relaxed.
+    //   integrity checks are never relaxed. With interior classification on
+    //   every interior freedom is already active and exterior verts never
+    //   relax, so a single pass is both maximal and final.
     const depth = target / Math.max(1, g.aliveTris);
-    const maxStage = depth >= 0.75 ? 0 : depth >= 0.5 ? 1 : depth >= 0.25 ? 2 : 3;
+    const maxStage = interior !== null
+        ? (depth >= 0.75 ? 0 : depth >= 0.5 ? 1 : depth >= 0.25 ? 2 : 3)
+        : (depth >= 0.75 ? 0 : depth >= 0.5 ? 1 : depth >= 0.25 ? 2 : 3);
+    // Deepest-stage threshold: exterior openings whose loop fits inside
+    // this length may dissolve; larger openings never do.
+    let openingLimit = 0;
+    if (interior !== null && opt.dissolveOpeningBelow > 0) {
+        let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+        for (const p of g.pos) {
+            if (p.x < mnx) mnx = p.x; if (p.x > mxx) mxx = p.x;
+            if (p.y < mny) mny = p.y; if (p.y > mxy) mxy = p.y;
+            if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
+        }
+        openingLimit = opt.dissolveOpeningBelow * Math.hypot(mxx - mnx, mxy - mny, mxz - mnz);
+    }
     let stage = 0;
     let collapses = 0, iteration = 0;
     let errSum = 0, errMax = 0;
@@ -603,15 +910,24 @@ export function simplify(source, opt) {
                     break;
                 }
             }
-            const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage);
+            const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, stage);
             if (r.cost === Infinity) continue;
             const p = r.p;
             const limit = MAX_COLLAPSE_DISTANCE * Math.max(g.localScale[e.a], g.localScale[e.b]);
             if (len3(sub3(g.pos[e.a], g.pos[e.b])) > limit) continue;
             if (opt.preventFlips && wouldFlip(g, e, p)) continue;
             if (opt.preserveTopology && !passesLinkCondition(g, vertEdges, e)) continue;
-            if (opt.preserveBoundaryLoops && violatesBoundaryTopology(g, vertEdges, e, silhouette, stage)) continue;
-            commitCollapse(g, quadrics, vertEdges, e, p);
+            if (opt.preserveBoundaryLoops && violatesBoundaryTopology(g, vertEdges, e, silhouette, interior, stage, openingLimit)) continue;
+            // Component floor: a component may shrink to a legal stub but
+            // never below its floor, so thin parts degrade rather than vanish.
+            if (opt.componentMinTris > 0) {
+                const c = g.vertComp[e.a];
+                let killed = 0;
+                for (const t of e.tris) if (g.triAlive[t]) killed++;
+                const floor = Math.min(opt.componentMinTris, g.compOrig[c]);
+                if (g.compTris[c] - killed < floor) continue;
+            }
+            commitCollapse(g, quadrics, vertEdges, e, p, stage);
             collapses++;
             const errorSquared = Math.max(0, r.cost);
             errSum += errorSquared;
@@ -621,7 +937,7 @@ export function simplify(source, opt) {
                 const next = incident[i];
                 if (next.removed) { incident.splice(i, 1); continue; }
                 next.version++;
-                const nc = edgeCost(g, quadrics, vertEdges, next, opt, silhouette, stage);
+                const nc = edgeCost(g, quadrics, vertEdges, next, opt, silhouette, interior, stage);
                 if (nc.cost !== Infinity) heap.push(nc.cost, next, next.version);
             }
         }
@@ -631,7 +947,7 @@ export function simplify(source, opt) {
         for (const e of g.edges.values()) {
             if (e.removed) continue;
             e.version++;
-            const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage);
+            const r = edgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, stage);
             if (r.cost !== Infinity) heap.push(r.cost, e, e.version);
         }
     }
@@ -848,7 +1164,7 @@ function addEdgeConstraintPlane(g, quadrics, e, tri, weight) {
 }
 
 // --- collapse --------------------------------------------------------------------
-function edgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage) {
+function edgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, stage) {
     const la = g.locked[e.a], lb = g.locked[e.b];
     if (la && lb) return { cost: Infinity, p: null };
     const q = new Quadric();
@@ -858,9 +1174,9 @@ function edgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage) {
     let chosen = null;
     let cost = Infinity;
     const consider = (p) => {
-        if (!preservesFeatureVertex(g, vertEdges, e.a, e.b, p, silhouette, stage) ||
-            !preservesFeatureVertex(g, vertEdges, e.b, e.a, p, silhouette, stage) ||
-            !canMoveAttributes(g, e, p)) return;
+        if (!preservesFeatureVertex(g, vertEdges, e.a, e.b, p, silhouette, interior, stage) ||
+            !preservesFeatureVertex(g, vertEdges, e.b, e.a, p, silhouette, interior, stage) ||
+            !canMoveAttributes(g, e, p, stage)) return;
         const c = q.eval(p);
         if (Number.isNaN(c) || c === Infinity || c === -Infinity) return;
         if (c < cost) { cost = c; chosen = p; }
@@ -868,15 +1184,20 @@ function edgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage) {
     if (!lb) consider(pa);
     if (!la) consider(pb);
     if (!la && !lb && !e.phantom) consider(mid3(pa, pb));
+    // Pure-interior collapses cannot move or delete anything visible from
+    // outside - bias them so hidden detail is consumed first.
+    if (interior !== null && interior[e.a] && interior[e.b])
+        cost *= opt.interiorCostBias;
     return { cost, p: chosen };
 }
 
 // A vertex on a feature curve may only move along the chain itself.
-// Interior release relaxes this for non-silhouette verts (see C# comments).
-function preservesFeatureVertex(g, vertEdges, vertex, other, p, silhouette, stage) {
+// With interior classification: interior verts free at every stage, exterior
+// verts never relax (see QEMSimplifier.cs for the full contract).
+function preservesFeatureVertex(g, vertEdges, vertex, other, p, silhouette, interior, stage) {
     if (eq3(p, g.pos[vertex])) return true;
     const shell = !!silhouette[vertex];
-    if (!shell && stage >= 2) return true;
+    if ((interior !== null && interior[vertex]) || (!shell && stage >= 2)) return true;
     let count = 0;
     let first = V3_ZERO, second = V3_ZERO;
     let alongFeature = false;
@@ -931,13 +1252,15 @@ function partnerWedge(g, e, vertex, wedge) {
     return partner;
 }
 
-function canMoveAttributes(g, e, p) {
+function canMoveAttributes(g, e, p, stage) {
     for (let side = 0; side < 2; side++) {
         const v = side === 0 ? e.a : e.b;
         if (eq3(p, g.pos[v])) continue;
         for (const wid of usedWedges(g, v)) {
             const partner = partnerWedge(g, e, v, wid);
-            if (partner < 0) return false;
+            // From stage 2 a missing partner keeps the wedge's own attributes
+            // instead of vetoing the collapse (tiny local seam artifact).
+            if (partner < 0) { if (stage >= 2) continue; return false; }
             const a = g.wedges[wid], b = g.wedges[partner];
             if (!eqBW(a.boneWeight, b.boneWeight) || a.tangent.w !== b.tangent.w) return false;
         }
@@ -945,7 +1268,7 @@ function canMoveAttributes(g, e, p) {
     return true;
 }
 
-function moveAttributes(g, e, p) {
+function moveAttributes(g, e, p, stage) {
     const edge = sub3(g.pos[e.b], g.pos[e.a]);
     const e2 = sqrLen3(edge);
     const t = e2 > 0 ? clamp01(dot3(sub3(p, g.pos[e.a]), edge) / e2) : 0;
@@ -956,7 +1279,7 @@ function moveAttributes(g, e, p) {
         for (const wid of usedWedges(g, v)) {
             const partner = partnerWedge(g, e, v, wid);
             // Eligibility checked before committing; a missing pair is a programming error.
-            if (partner < 0) throw new Error('Missing edge attribute chart');
+            if (partner < 0) { if (stage >= 2) continue; throw new Error('Missing edge attribute chart'); }
             const a = g.wedges[side === 0 ? wid : partner];
             const b = g.wedges[side === 0 ? partner : wid];
             const tangent = lerp4(a.tangent, b.tangent, t);
@@ -1090,7 +1413,7 @@ function isNeighbor(edges, v) {
 }
 
 // Boundary-loop topology guard: no loop merges, splits or annihilation.
-function violatesBoundaryTopology(g, vertEdges, e, silhouette, stage) {
+function violatesBoundaryTopology(g, vertEdges, e, silhouette, interior, stage, openingLimit) {
     if (!touchesBoundary(vertEdges[e.a]) || !touchesBoundary(vertEdges[e.b]))
         return false;
 
@@ -1098,10 +1421,11 @@ function violatesBoundaryTopology(g, vertEdges, e, silhouette, stage) {
     const seenEdge = new Set();
     const stack = [e.a];
     seenVert.add(e.a);
-    let reachedB = false, onShell = !!(silhouette[e.a] || silhouette[e.b]);
+    const exteriorVert = (v) => silhouette[v] || (interior !== null && !interior[v]);
+    let reachedB = false, onShell = exteriorVert(e.a) || exteriorVert(e.b);
     while (stack.length > 0) {
         const v = stack.pop();
-        if (silhouette[v]) onShell = true;
+        if (exteriorVert(v)) onShell = true;
         const list = vertEdges[v];
         for (let i = 0; i < list.length; i++) {
             const be = list[i];
@@ -1113,8 +1437,24 @@ function violatesBoundaryTopology(g, vertEdges, e, silhouette, stage) {
         }
     }
 
-    // Deepest release: a fully interior boundary component may shrink away.
-    if (stage >= 3 && !onShell) return false;
+    // A boundary component touching nothing visible from outside is a fully
+    // interior opening - it may shrink away. With interior classification
+    // that is allowed immediately; otherwise it waits for the deepest stage.
+    if (!onShell && (interior !== null || stage >= 3)) return false;
+
+    // Deepest stage: small exterior openings (portholes, railing gaps) whose
+    // whole loop fits under the size limit may dissolve; larger openings
+    // stay protected forever.
+    if (onShell && stage >= 3 && interior !== null && openingLimit > 0) {
+        let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+        for (const v of seenVert) {
+            const p = g.pos[v];
+            if (p.x < mnx) mnx = p.x; if (p.x > mxx) mxx = p.x;
+            if (p.y < mny) mny = p.y; if (p.y > mxy) mxy = p.y;
+            if (p.z < mnz) mnz = p.z; if (p.z > mxz) mxz = p.z;
+        }
+        if (Math.hypot(mxx - mnx, mxy - mny, mxz - mnz) < openingLimit) return false;
+    }
 
     if (!reachedB) return true;                    // loop merge
     if (e.boundary) return seenEdge.size <= 3;     // loop annihilation
@@ -1127,9 +1467,9 @@ function touchesBoundary(edges) {
     return false;
 }
 
-function commitCollapse(g, quadrics, vertEdges, e, p) {
+function commitCollapse(g, quadrics, vertEdges, e, p, stage) {
     const a = e.a, b = e.b;
-    moveAttributes(g, e, p);
+    moveAttributes(g, e, p, stage);
     const oldA = g.pos[a];
     g.pos[a] = v3(p.x, p.y, p.z);
 

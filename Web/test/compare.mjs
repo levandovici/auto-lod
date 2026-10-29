@@ -3,7 +3,7 @@
 //   node Web/test/compare.mjs [path/to/demo_src.obj] [targets...]
 import { readFileSync } from 'fs';
 import { parseObj, triangleCount } from '../public/js/objio.js';
-import { simplify, defaultOptions } from '../public/js/simplifier.js';
+import { simplify, defaultOptions } from '../engine/simplifier.js';
 
 const file = process.argv[2] || process.env.TEMP + '\\lodharness\\demo_src.obj';
 const targets = process.argv.slice(3).map(Number);

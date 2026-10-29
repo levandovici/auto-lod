@@ -27,6 +27,7 @@ namespace ComplexLODs
             public float maxError, rmsError;
             public bool reachedTarget, cancelled, sourceReused, sharedWithPrevious;
             public int releaseStage;
+            public int strippedInteriorTriangles;
             public double ms;
         }
 
@@ -228,6 +229,7 @@ namespace ComplexLODs
                         reachedTarget = sres != null ? sres.reachedTarget : rr.sourceTriangles <= target,
                         cancelled = sres != null && sres.cancelled,
                         releaseStage = sres != null ? sres.releaseStage : 0,
+                        strippedInteriorTriangles = sres != null ? sres.strippedInteriorTriangles : 0,
                         ms = sres != null ? sres.elapsedMs : 0.0
                     });
                     if (sres != null && sres.cancelled) { cancelled = true; break; }
@@ -394,6 +396,7 @@ namespace ComplexLODs
                         reachedTarget = sres != null ? sres.reachedTarget : rr.sourceTriangles <= target,
                         cancelled = sres != null && sres.cancelled,
                         releaseStage = sres != null ? sres.releaseStage : 0,
+                        strippedInteriorTriangles = sres != null ? sres.strippedInteriorTriangles : 0,
                         ms = sres != null ? sres.elapsedMs : 0.0
                     });
                     if (sres != null && sres.cancelled) { cancelled = true; break; }

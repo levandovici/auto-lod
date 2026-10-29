@@ -104,10 +104,15 @@ namespace ComplexLODs
                 useVertexColorImportance = simplify.useVertexColorImportance,
                 vertexColorChannel = simplify.vertexColorChannel,
                 importanceMax = simplify.importanceMax,
+                interiorRemoval = simplify.interiorRemoval,
+                stripInterior = simplify.stripInterior,
+                interiorCostBias = simplify.interiorCostBias,
                 preventFlips = simplify.preventFlips,
                 neverCollapseLocked = simplify.neverCollapseLocked,
                 preserveTopology = simplify.preserveTopology,
                 preserveBoundaryLoops = simplify.preserveBoundaryLoops,
+                dissolveOpeningBelow = simplify.dissolveOpeningBelow,
+                componentMinTris = simplify.componentMinTris,
                 recalculateNormals = simplify.recalculateNormals
             };
             return o;

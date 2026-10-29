@@ -66,6 +66,10 @@ namespace ComplexLODs.Core
             }
         }
 
+        // Debug counters: which guard rejected the last heap pops.
+        public static readonly long[] Reject = new long[8];
+        // 0 bothLocked 1 noPlacement(feature/attr) 2 distance 3 flip 4 link 5 boundary
+
         public static SimplifyResult Simplify(Mesh source, SimplifyOptions opt)
         {
             var sw = Stopwatch.StartNew();
@@ -78,6 +82,65 @@ namespace ComplexLODs.Core
             res.sourceTriangles = g.aliveTris;
             res.sourceVertices = g.pos.Length;
             res.sourceBoundaryComponents = g.CountBoundaryComponents();
+
+            // Exterior shell: vertices on the 2D convex hull of some viewing
+            // projection form the model's outline. They are locked for the
+            // whole run so the staged interior release below can sacrifice
+            // detail without ever moving the outer bounds.
+            bool[] silhouette = MarkSilhouette(g);
+
+            // Interior classification: anything that cannot be seen from any
+            // outside view is interior. Interior vertices collapse under fully
+            // relaxed rules and interior-interior edges are cheap, so hidden
+            // detail is consumed before the visible shell is touched. With
+            // stripInterior the fully-interior triangles are deleted outright;
+            // the cut rim becomes boundary edges, which the feature/boundary
+            // machinery below then protects like any other opening.
+            bool[] interior = null;
+            if (opt.interiorRemoval)
+            {
+                bool[] exterior = Visibility.ExteriorVertices(g, out _);
+                interior = new bool[g.pos.Length];
+                int intVerts = 0;
+                for (int i = 0; i < interior.Length; i++)
+                {
+                    interior[i] = !exterior[i] && !silhouette[i];
+                    if (interior[i]) intVerts++;
+                }
+                res.interiorVertices = intVerts;
+                for (int t = 0; t < g.triSub.Length; t++)
+                {
+                    if (!g.triAlive[t]) continue;
+                    if (interior[g.cornerVert[g.triCorners[t * 3]]] &&
+                        interior[g.cornerVert[g.triCorners[t * 3 + 1]]] &&
+                        interior[g.cornerVert[g.triCorners[t * 3 + 2]]])
+                        res.interiorTriangles++;
+                }
+                if (opt.stripInterior)
+                {
+                    for (int t = 0; t < g.triSub.Length; t++)
+                    {
+                        if (!g.triAlive[t]) continue;
+                        int v0 = g.cornerVert[g.triCorners[t * 3]];
+                        int v1 = g.cornerVert[g.triCorners[t * 3 + 1]];
+                        int v2 = g.cornerVert[g.triCorners[t * 3 + 2]];
+                        if (!interior[v0] || !interior[v1] || !interior[v2]) continue;
+                        g.RemoveTri(t);
+                        res.strippedInteriorTriangles++;
+                    }
+                    if (res.strippedInteriorTriangles > 0)
+                    {
+                        foreach (var kv in g.edges)
+                        {
+                            Edge e = kv.Value;
+                            for (int i = e.tris.Count - 1; i >= 0; i--)
+                                if (!g.triAlive[e.tris[i]]) e.tris.RemoveAt(i);
+                            if (e.tris.Count == 0) e.removed = true;
+                            else e.boundary = e.tris.Count == 1;
+                        }
+                    }
+                }
+            }
 
             var vertEdges = BuildVertexEdges(g);
             ApplyVertexWeightsAndLocks(g, source, opt);
@@ -97,11 +160,8 @@ namespace ComplexLODs.Core
                     g.locked[edge.a] = g.locked[edge.b] = true;
             }
 
-            // Exterior shell: vertices on the 2D convex hull of some viewing
-            // projection form the model's outline. They are locked for the
-            // whole run so the staged interior release below can sacrifice
-            // detail without ever moving the outer bounds.
-            bool[] silhouette = MarkSilhouette(g);
+            // Silhouette verts stay locked for the whole run: the outer
+            // bounds can never move, no matter how deep the target is.
             for (int i = 0; i < silhouette.Length; i++)
                 if (silhouette[i]) g.locked[i] = true;
 
@@ -111,7 +171,7 @@ namespace ComplexLODs.Core
             {
                 Edge e = kv.Value;
                 if (e.removed) continue;
-                double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, 0, out _);
+                double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, 0, out _);
                 if (!double.IsInfinity(cost)) heap.Push(cost, e, e.version);
             }
             int target = Mathf.Max(0, opt.targetTriangleCount);
@@ -125,8 +185,32 @@ namespace ComplexLODs.Core
             //   1 - interior verts may collapse along their feature chain, corners too
             //   2 - interior verts move freely (seams/creases may be consumed)
             //   3 - interior boundary loops may additionally dissolve
+            // With interior classification the ladder relaxes only the
+            // exterior: interior freedom and interior-loop dissolution are
+            // active from the start; stage 1 lets exterior verts collapse
+            // along their feature chains past corners; stage 2 frees exterior
+            // verts to endpoint/midpoint placements like the legacy ladder -
+            // but boundary loops touching exterior verts never dissolve (the
+            // legacy stage-3 could erase whole openings), and the interior
+            // cost bias keeps hidden detail first in line at every stage.
             float depth = (float)target / Mathf.Max(1, g.aliveTris);
-            int maxStage = depth >= 0.75f ? 0 : depth >= 0.5f ? 1 : depth >= 0.25f ? 2 : 3;
+            int maxStage = interior != null
+                ? (depth >= 0.75f ? 0 : depth >= 0.5f ? 1 : depth >= 0.25f ? 2 : 3)
+                : (depth >= 0.75f ? 0 : depth >= 0.5f ? 1 : depth >= 0.25f ? 2 : 3);
+            // Deepest-stage threshold: exterior openings whose loop fits
+            // inside this length may dissolve; larger openings never do.
+            float openingLimit = 0f;
+            if (interior != null && opt.dissolveOpeningBelow > 0f)
+            {
+                var mn = g.pos[0]; var mx = g.pos[0];
+                for (int i = 1; i < g.pos.Length; i++)
+                {
+                    Vector3 p = g.pos[i];
+                    mn.x = Mathf.Min(mn.x, p.x); mn.y = Mathf.Min(mn.y, p.y); mn.z = Mathf.Min(mn.z, p.z);
+                    mx.x = Mathf.Max(mx.x, p.x); mx.y = Mathf.Max(mx.y, p.y); mx.z = Mathf.Max(mx.z, p.z);
+                }
+                openingLimit = opt.dissolveOpeningBelow * (mx - mn).magnitude;
+            }
             int stage = 0;
             int collapses = 0, iteration = 0;
             double errSum = 0, errMax = 0;
@@ -146,14 +230,25 @@ namespace ComplexLODs.Core
                             break;
                         }
                     }
-                    double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage, out Vector3 p);
+                    double cost = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, stage, out Vector3 p);
                     if (double.IsInfinity(cost)) continue;
                     float limit = MaxCollapseDistance * Mathf.Max(g.localScale[e.a], g.localScale[e.b]);
-                    if ((g.pos[e.a] - g.pos[e.b]).magnitude > limit) continue;
-                    if (opt.preventFlips && WouldFlip(g, e, p)) continue;
-                    if (opt.preserveTopology && !PassesLinkCondition(g, vertEdges, e)) continue;
-                    if (opt.preserveBoundaryLoops && ViolatesBoundaryTopology(g, vertEdges, e, silhouette, stage)) continue;
-                    CommitCollapse(g, quadrics, vertEdges, e, p);
+                    if ((g.pos[e.a] - g.pos[e.b]).magnitude > limit) { Reject[2]++; continue; }
+                    if (opt.preventFlips && WouldFlip(g, e, p)) { Reject[3]++; continue; }
+                    if (opt.preserveTopology && !PassesLinkCondition(g, vertEdges, e)) { Reject[4]++; continue; }
+                    if (opt.preserveBoundaryLoops && ViolatesBoundaryTopology(g, vertEdges, e, silhouette, interior, stage, openingLimit)) { Reject[5]++; continue; }
+                    // Component floor: a component may shrink to a legal stub
+                    // but never below its floor, so thin parts degrade rather
+                    // than vanish.
+                    if (opt.componentMinTris > 0)
+                    {
+                        int c = g.vertComp[e.a], killed = 0;
+                        for (int i = 0; i < e.tris.Count; i++)
+                            if (g.triAlive[e.tris[i]]) killed++;
+                        int floor = Math.Min(opt.componentMinTris, g.compOrig[c]);
+                        if (g.compTris[c] - killed < floor) { Reject[6]++; continue; }
+                    }
+                    CommitCollapse(g, quadrics, vertEdges, e, p, stage);
                     collapses++;
                     double errorSquared = Math.Max(0.0, cost);
                     errSum += errorSquared;
@@ -164,7 +259,7 @@ namespace ComplexLODs.Core
                         Edge next = incident[i];
                         if (next.removed) { incident.RemoveAt(i); continue; }
                         next.version++;
-                        double nextCost = EdgeCost(g, quadrics, vertEdges, next, opt, silhouette, stage, out _);
+                        double nextCost = EdgeCost(g, quadrics, vertEdges, next, opt, silhouette, interior, stage, out _);
                         if (!double.IsInfinity(nextCost)) heap.Push(nextCost, next, next.version);
                     }
                 }
@@ -178,7 +273,7 @@ namespace ComplexLODs.Core
                     Edge e = kv.Value;
                     if (e.removed) continue;
                     e.version++;
-                    double c = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, stage, out _);
+                    double c = EdgeCost(g, quadrics, vertEdges, e, opt, silhouette, interior, stage, out _);
                     if (!double.IsInfinity(c)) heap.Push(c, e, e.version);
                 }
             }
@@ -453,20 +548,20 @@ namespace ComplexLODs.Core
 
         private static double EdgeCost(MeshGraph g, Quadric[] quadrics,
             List<Edge>[] vertEdges, Edge e, SimplifyOptions opt,
-            bool[] silhouette, int stage, out Vector3 best)
+            bool[] silhouette, bool[] interior, int stage, out Vector3 best)
         {
             best = Vector3.zero;
             bool la = g.locked[e.a], lb = g.locked[e.b];
-            if (la && lb) return double.PositiveInfinity;
+            if (la && lb) { Reject[0]++; return double.PositiveInfinity; }
             Quadric q = quadrics[e.a];
             q.Add(ref quadrics[e.b]);
             Vector3 pa = g.pos[e.a], pb = g.pos[e.b], chosen = Vector3.zero;
             double cost = double.PositiveInfinity;
             void Consider(Vector3 p)
             {
-                if (!PreservesFeatureVertex(g, vertEdges, e.a, e.b, p, silhouette, stage) ||
-                    !PreservesFeatureVertex(g, vertEdges, e.b, e.a, p, silhouette, stage) ||
-                    !CanMoveAttributes(g, e, p)) return;
+                if (!PreservesFeatureVertex(g, vertEdges, e.a, e.b, p, silhouette, interior, stage) ||
+                    !PreservesFeatureVertex(g, vertEdges, e.b, e.a, p, silhouette, interior, stage) ||
+                    !CanMoveAttributes(g, e, p, stage)) return;
                 double c = q.Eval(p);
                 if (double.IsNaN(c) || double.IsInfinity(c)) return;
                 if (c < cost) { cost = c; chosen = p; }
@@ -474,24 +569,33 @@ namespace ComplexLODs.Core
             if (!lb) Consider(pa);
             if (!la) Consider(pb);
             if (!la && !lb && !e.phantom) Consider((pa + pb) * .5f);
+            if (double.IsInfinity(cost)) Reject[1]++;
             best = chosen;
+            // Pure-interior collapses cannot move or delete anything visible
+            // from outside - bias them so hidden detail is consumed first.
+            if (interior != null && interior[e.a] && interior[e.b])
+                cost *= opt.interiorCostBias;
             return cost;
         }
 
         // A vertex on a feature curve may only move along the chain itself:
         // endpoint placement on its collinear feature neighbour. Corners and
         // junctions (non-collinear or 3+ feature edges) never move.
-        // Interior release relaxes this for vertices that are NOT on the
-        // exterior silhouette: stage 1 allows collapsing along the chain past
-        // corners and junctions, stage 2 frees interior vertices entirely.
-        // Silhouette verts keep the strict rule at every stage, so the outer
-        // bounds never move.
+        // With interior classification the distinction is exact: interior
+        // vertices are free at every stage. Exterior vertices keep the strict
+        // chain rule at stage 0 and may collapse along their feature chain
+        // past corners/junctions at stage 1 - the chain itself is followed,
+        // so openings and frames shrink along their own curves instead of
+        // being torn. Free off-chain movement (the old stage 2, which ate
+        // roofs and small attached parts) is never granted to exterior
+        // vertices. Without classification the legacy ladder relaxes
+        // non-silhouette vertices: stage 1 chain-past-corners, stage 2 free.
         private static bool PreservesFeatureVertex(MeshGraph g, List<Edge>[] vertEdges,
-            int vertex, int other, Vector3 p, bool[] silhouette, int stage)
+            int vertex, int other, Vector3 p, bool[] silhouette, bool[] interior, int stage)
         {
             if (p.Equals(g.pos[vertex])) return true;
             bool shell = silhouette[vertex];
-            if (!shell && stage >= 2) return true;
+            if ((interior != null && interior[vertex]) || (!shell && stage >= 2)) return true;
             int count = 0;
             Vector3 first = Vector3.zero, second = Vector3.zero;
             bool alongFeature = false;
@@ -555,7 +659,7 @@ namespace ComplexLODs.Core
             return partner;
         }
 
-        private static bool CanMoveAttributes(MeshGraph g, Edge e, Vector3 p)
+        private static bool CanMoveAttributes(MeshGraph g, Edge e, Vector3 p, int stage)
         {
             for (int side = 0; side < 2; side++)
             {
@@ -564,7 +668,15 @@ namespace ComplexLODs.Core
                 foreach (int wid in UsedWedges(g, v))
                 {
                     int partner = PartnerWedge(g, e, v, wid);
-                    if (partner < 0) return false;
+                    // At deep stages a wedge without an edge partner no longer
+                    // vetoes the collapse: it keeps its own attributes (a tiny
+                    // local seam artifact, invisible at LOD distance). Bone
+                    // weights and tangent handedness always stay strict.
+                    if (partner < 0)
+                    {
+                        if (stage >= 2) continue;
+                        return false;
+                    }
                     Wedge a = g.wedges[wid], b = g.wedges[partner];
                     if (!a.boneWeight.Equals(b.boneWeight) || a.tangent.w != b.tangent.w) return false;
                 }
@@ -572,7 +684,7 @@ namespace ComplexLODs.Core
             return true;
         }
 
-        private static void MoveAttributes(MeshGraph g, Edge e, Vector3 p)
+        private static void MoveAttributes(MeshGraph g, Edge e, Vector3 p, int stage)
         {
             Vector3 edge = g.pos[e.b] - g.pos[e.a];
             float t = edge.sqrMagnitude > 0 ?
@@ -585,8 +697,13 @@ namespace ComplexLODs.Core
                 foreach (int wid in UsedWedges(g, v))
                 {
                     int partner = PartnerWedge(g, e, v, wid);
-                    // Eligibility checked before committing; a missing pair is a programming error.
-                    if (partner < 0) throw new InvalidOperationException("Missing edge attribute chart");
+                    // Missing partner is allowed from stage 2 (deep targets):
+                    // the wedge keeps its own attributes instead of vetoing.
+                    if (partner < 0)
+                    {
+                        if (stage >= 2) continue;
+                        throw new InvalidOperationException("Missing edge attribute chart");
+                    }
                     Wedge a = g.wedges[side == 0 ? wid : partner];
                     Wedge b = g.wedges[side == 0 ? partner : wid];
                     Vector4 tangent = Vector4.Lerp(a.tangent, b.tangent, t);
@@ -757,24 +874,25 @@ namespace ComplexLODs.Core
         /// - a boundary edge may only collapse if its loop keeps >= 3 edges.
         /// </summary>
         private static bool ViolatesBoundaryTopology(MeshGraph g, List<Edge>[] vertEdges, Edge e,
-            bool[] silhouette, int stage)
+            bool[] silhouette, bool[] interior, int stage, float openingLimit)
         {
             if (!TouchesBoundary(vertEdges[e.a]) || !TouchesBoundary(vertEdges[e.b]))
                 return false;
 
             // Walk the boundary-edge component containing a; find whether b is
             // on it, how many edges the component has and whether it touches
-            // the exterior silhouette.
+            // anything visible from outside (silhouette or exterior surface).
             var seenVert = new HashSet<int>();
             var seenEdge = new HashSet<Edge>();
             var stack = new Stack<int>();
             stack.Push(e.a);
             seenVert.Add(e.a);
-            bool reachedB = false, onShell = silhouette[e.a] || silhouette[e.b];
+            bool ExteriorVert(int v) => silhouette[v] || (interior != null && !interior[v]);
+            bool reachedB = false, onShell = ExteriorVert(e.a) || ExteriorVert(e.b);
             while (stack.Count > 0)
             {
                 int v = stack.Pop();
-                onShell |= silhouette[v];
+                onShell |= ExteriorVert(v);
                 var list = vertEdges[v];
                 for (int i = 0; i < list.Count; i++)
                 {
@@ -787,9 +905,26 @@ namespace ComplexLODs.Core
                 }
             }
 
-            // Deepest release: a boundary component that shares no silhouette
-            // vertex is a fully interior opening - it may now shrink away.
-            if (stage >= 3 && !onShell) return false;
+            // A boundary component touching nothing visible from outside is a
+            // fully interior opening - it may shrink away. With interior
+            // classification that is allowed immediately; otherwise it waits
+            // for the deepest release stage.
+            if (!onShell && (interior != null || stage >= 3)) return false;
+
+            // Deepest stage: small exterior openings (portholes, railing
+            // gaps) whose whole loop fits under the size limit may dissolve;
+            // larger openings stay protected forever.
+            if (onShell && stage >= 3 && interior != null && openingLimit > 0f)
+            {
+                var mn = g.pos[e.a]; var mx = g.pos[e.a];
+                foreach (int v in seenVert)
+                {
+                    Vector3 p = g.pos[v];
+                    mn.x = Mathf.Min(mn.x, p.x); mn.y = Mathf.Min(mn.y, p.y); mn.z = Mathf.Min(mn.z, p.z);
+                    mx.x = Mathf.Max(mx.x, p.x); mx.y = Mathf.Max(mx.y, p.y); mx.z = Mathf.Max(mx.z, p.z);
+                }
+                if ((mx - mn).magnitude < openingLimit) return false;
+            }
 
             if (!reachedB) return true;                       // loop merge
             if (e.boundary) return seenEdge.Count <= 3;       // loop annihilation
@@ -803,12 +938,12 @@ namespace ComplexLODs.Core
             return false;
         }
 
-        private static void CommitCollapse(MeshGraph g, Quadric[] quadrics, List<Edge>[] vertEdges, Edge e, Vector3 p)
+        private static void CommitCollapse(MeshGraph g, Quadric[] quadrics, List<Edge>[] vertEdges, Edge e, Vector3 p, int stage)
         {
             int a = e.a, b = e.b;
             // Transport attributes along the source edge chart before any
             // position or wedge changes below.
-            MoveAttributes(g, e, p);
+            MoveAttributes(g, e, p, stage);
             Vector3 oldA = g.pos[a];
             g.pos[a] = p;
 

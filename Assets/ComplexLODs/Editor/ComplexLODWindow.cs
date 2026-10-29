@@ -165,6 +165,7 @@ namespace ComplexLODs
                         l.sharedWithPrevious ? "shared with previous level (identical geometry)" :
                         !l.reachedTarget ? "preservation limited" : "target reached";
                     if (l.releaseStage > 0) status += " | interior released x" + l.releaseStage;
+                    if (l.strippedInteriorTriangles > 0) status += " | interior -" + l.strippedInteriorTriangles + " tris";
                     EditorGUILayout.LabelField(
                         "  LOD" + (i + 1) + ": " + l.triangles + "/" + l.targetTriangles + " tris, " +
                         l.vertices + " verts | boundary components " + l.boundaryComponents + "/" +

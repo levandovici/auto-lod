@@ -59,6 +59,14 @@ namespace ComplexLODs.Core
         public bool[] triAlive;
         public int aliveTris;
 
+        // Connected components over the welded-vertex graph: thin parts like
+        // masts, ropes and railings are their own components, so a floor on
+        // the alive-triangle count degrades them to a legal stub instead of
+        // letting them telescope away entirely.
+        public int[] vertComp;      // dense component index per welded vertex
+        public int[] compTris;      // alive triangle count per component
+        public int[] compOrig;      // triangle count at build time
+
         public readonly Dictionary<ulong, Edge> edges = new Dictionary<ulong, Edge>();
 
         public static ulong EdgeKey(int a, int b)
@@ -93,6 +101,8 @@ namespace ComplexLODs.Core
             if (!triAlive[tri]) return;
             triAlive[tri] = false;
             aliveTris--;
+            if (compTris != null)
+                compTris[vertComp[cornerVert[triCorners[tri * 3]]]]--;
         }
 
         public int ResolveWedge(int wedge)
@@ -299,6 +309,31 @@ namespace ComplexLODs.Core
             g.localScale = new float[vCount];
             for (int i = 0; i < vCount; i++)
                 g.localScale[i] = eCnt[i] > 0 ? eSum[i] / eCnt[i] : gMean;
+
+            // Connected components: union-find over alive edges.
+            var uf = new int[vCount];
+            for (int i = 0; i < vCount; i++) uf[i] = i;
+            int Find(int x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; }
+            foreach (var kv in g.edges)
+            {
+                Edge e = kv.Value;
+                if (e.removed) continue;
+                int ra = Find(e.a), rb = Find(e.b);
+                if (ra != rb) uf[rb] = ra;
+            }
+            var compIdx = new Dictionary<int, int>();
+            g.vertComp = new int[vCount];
+            for (int i = 0; i < vCount; i++)
+            {
+                int r = Find(i);
+                int ci;
+                if (!compIdx.TryGetValue(r, out ci)) { ci = compIdx.Count; compIdx.Add(r, ci); }
+                g.vertComp[i] = ci;
+            }
+            g.compTris = new int[compIdx.Count];
+            for (int t = 0; t < g.triAlive.Length; t++)
+                if (g.triAlive[t]) g.compTris[g.vertComp[g.cornerVert[g.triCorners[t * 3]]]]++;
+            g.compOrig = (int[])g.compTris.Clone();
 
             return g;
         }
