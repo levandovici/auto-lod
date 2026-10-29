@@ -1,18 +1,27 @@
 import * as THREE from 'three';
-import { parseGlb } from './js/glbmini.js?v=7';
+import { parseGlb } from './js/glbmini.js?v=10';
 
-// Real ComplexLODs output for the Poly Haven "Ship Pinnace" (CC0), Quality
-// preset. LOD5 deduplicates onto LOD4's mesh, exactly like the Unity plugin's
-// identical-geometry sharing.
-const DEMO_LODS = [
-    { file: 'lods/ship_lod0.glb', label: 'LOD0 (source)', stage: '' },
-    { file: 'lods/ship_lod1.glb', label: 'LOD1', stage: 'interior release ×1' },
-    { file: 'lods/ship_lod2.glb', label: 'LOD2', stage: 'interior release ×1' },
-    { file: 'lods/ship_lod3.glb', label: 'LOD3', stage: 'interior release ×2' },
-    { file: 'lods/ship_lod4.glb', label: 'LOD4', stage: 'interior release ×3' },
-    { file: 'lods/ship_lod4.glb', label: 'LOD5', stage: 'shared with LOD4' },
+// Side-by-side comparison for the Poly Haven "Ship Pinnace" (CC0), Quality
+// preset: V1 = previous algorithm output, V2 = current (visibility-classified
+// interior removal + deep-stage release ladder).
+const DEMO_V1 = [
+    { file: 'lods/shipv1_lod0.glb', label: 'LOD0 (source)', stage: '' },
+    { file: 'lods/shipv1_lod1.glb', label: 'LOD1', stage: 'interior ×1' },
+    { file: 'lods/shipv1_lod2.glb', label: 'LOD2', stage: 'interior ×1' },
+    { file: 'lods/shipv1_lod3.glb', label: 'LOD3', stage: 'interior ×2' },
+    { file: 'lods/shipv1_lod4.glb', label: 'LOD4', stage: 'interior ×3' },
+    { file: 'lods/shipv1_lod4.glb', label: 'LOD5', stage: 'shared with LOD4' },
 ].map(e => ({ ...e, demo: true }));
-let lods = DEMO_LODS;
+const DEMO_V2 = [
+    { file: 'lods/ship_lod0.glb', label: 'LOD0 (source)', stage: '' },
+    { file: 'lods/ship_lod1.glb', label: 'LOD1', stage: 'interior ×1' },
+    { file: 'lods/ship_lod2.glb', label: 'LOD2', stage: 'interior ×1' },
+    { file: 'lods/ship_lod3.glb', label: 'LOD3', stage: 'interior ×2' },
+    { file: 'lods/ship_lod4.glb', label: 'LOD4', stage: 'interior ×2' },
+    { file: 'lods/ship_lod5.glb', label: 'LOD5', stage: 'interior ×3' },
+].map(e => ({ ...e, demo: true }));
+let lods = DEMO_V2;
+let lodsV1 = DEMO_V1; // companion list in compare mode, null when uploaded
 
 const viewport = document.getElementById('viewport');
 const slider = document.getElementById('lodSlider');
@@ -66,6 +75,8 @@ const material = new THREE.MeshStandardMaterial({
 });
 const model = new THREE.Mesh(new THREE.BufferGeometry(), material);
 scene.add(model);
+const modelV1 = new THREE.Mesh(new THREE.BufferGeometry(), material);
+scene.add(modelV1);
 
 // Per-submesh diffuse maps for the built-in demo (material name -> jpg).
 const texLoader = new THREE.TextureLoader();
@@ -91,7 +102,14 @@ const edges = new THREE.LineSegments(
     new THREE.BufferGeometry(),
     new THREE.LineBasicMaterial({ color: 0x2c3a52, transparent: true, opacity: 0.35 }));
 edges.visible = false;
-scene.add(edges);
+model.add(edges); // child: follows the model's side-by-side offset
+const edgesV1 = new THREE.LineSegments(new THREE.BufferGeometry(), edges.material);
+edgesV1.visible = false;
+modelV1.add(edgesV1);
+
+// Floating "V1 / V2" tags, projected on screen each frame in compare mode.
+const tagV1 = document.getElementById('tagV1');
+const tagV2 = document.getElementById('tagV2');
 
 // --- minimal orbit controls -------------------------------------------------
 let yaw = -0.6, pitch = 0.35, dist = 90, radius = 45, target = new THREE.Vector3();
@@ -124,7 +142,9 @@ resize();
 
 // --- LOD switching -----------------------------------------------------------
 let geos = new Array(lods.length).fill(null);
+let geosV1 = new Array(lodsV1.length).fill(null);
 let edgeGeos = new Array(lods.length).fill(null);
+let edgeGeosV1 = new Array(lodsV1.length).fill(null);
 let current = -1;
 
 // loading bar
@@ -173,14 +193,14 @@ function fetchGeo(url) {
     return urlGeo.get(url);
 }
 
-function geometryAt(i) {
-    if (!geos[i]) {
-        const entry = lods[i];
-        if (entry.share !== undefined) return geometryAt(entry.share);
-        if (entry.mesh) geos[i] = meshToGeometry(entry.mesh);
-        else return fetchGeo(entry.preview || entry.file).then(g => geos[i] = g);
+function geometryAt(i, list = lods, cache = geos) {
+    if (!cache[i]) {
+        const entry = list[i];
+        if (entry.share !== undefined) return geometryAt(entry.share, list, cache);
+        if (entry.mesh) cache[i] = meshToGeometry(entry.mesh);
+        else return fetchGeo(entry.preview || entry.file).then(g => cache[i] = g);
     }
-    return Promise.resolve(geos[i]);
+    return Promise.resolve(cache[i]);
 }
 
 async function showLOD(i) {
@@ -191,50 +211,107 @@ async function showLOD(i) {
     if (current !== i) return;                    // stale fetch, slider moved on
     model.geometry = geo;
     model.material = (lods[i].demo && tex.checked && demoMaterials(geo)) || material;
-    updateEdges(i);
+    updateEdges(i, edges, edgeGeos, model);
 
     const tris = geo.index.count / 3;
     const g0 = await geometryAt(0);
     const srcTris = g0.index.count / 3;
-    lodLabel.textContent = lods[i].label;
-    triLabel.textContent = `${tris.toLocaleString()} tris · ${(100 * tris / srcTris).toFixed(1)}% of source`;
-    stageLabel.textContent = lods[i].stage || '';
+
+    if (lodsV1) {
+        // Compare mode: load the V1 mesh at the same level into the second ship.
+        const g1 = await geometryAt(i, lodsV1, geosV1);
+        if (current !== i) return;
+        modelV1.geometry = g1;
+        modelV1.material = (tex.checked && demoMaterials(g1)) || material;
+        updateEdges(i, edgesV1, edgeGeosV1, modelV1);
+        const tris1 = g1.index.count / 3;
+        lodLabel.textContent = lods[i].label;
+        triLabel.textContent =
+            `V1 ${tris1.toLocaleString()} · V2 ${tris.toLocaleString()} tris · ${(100 * tris / srcTris).toFixed(1)}% of source`;
+        stageLabel.textContent =
+            `V1 ${lodsV1[i].stage || 'source'} · V2 ${lods[i].stage || 'source'}`;
+    } else {
+        lodLabel.textContent = lods[i].label;
+        triLabel.textContent = `${tris.toLocaleString()} tris · ${(100 * tris / srcTris).toFixed(1)}% of source`;
+        stageLabel.textContent = lods[i].stage || '';
+    }
 }
 
 // Wireframe edges are expensive to build on dense meshes — lazily, only
 // when the checkbox is on, and cached per level.
-async function updateEdges(i) {
-    edges.visible = wire.checked;
+async function updateEdges(i, line, cache, m) {
+    line.visible = wire.checked;
     if (!wire.checked) return;
-    if (!edgeGeos[i]) {
+    if (!cache[i]) {
         inflight++;
         setLoad(1, 'building wireframe…');
         await new Promise(r => setTimeout(r, 10)); // let the label paint
-        edgeGeos[i] = new THREE.EdgesGeometry(model.geometry, 30);
+        cache[i] = new THREE.EdgesGeometry(m.geometry, 30);
         hideLoad();
     }
-    edges.geometry = edgeGeos[i];
+    line.geometry = cache[i];
 }
 
 slider.addEventListener('input', () => showLOD(+slider.value));
-wire.addEventListener('change', () => { if (current >= 0) updateEdges(current); });
+wire.addEventListener('change', () => {
+    if (current < 0) return;
+    updateEdges(current, edges, edgeGeos, model);
+    if (lodsV1) updateEdges(current, edgesV1, edgeGeosV1, modelV1);
+});
 tex.addEventListener('change', () => {
     const on = lods[current] && lods[current].demo && tex.checked;
     model.material = on ? (demoMaterials(model.geometry) || material) : material;
+    if (lodsV1)
+        modelV1.material = (tex.checked && demoMaterials(modelV1.geometry)) || material;
 });
 
 function frameOn(geo) {
     geo.computeBoundingSphere();
     const c = geo.boundingSphere.center, r = geo.boundingSphere.radius;
+    let effectiveR = r;
+    if (lodsV1) {
+        // Compare mode: place the two ships side by side along the SHORT
+        // horizontal axis (so two long hulls sit parallel, not nose-to-tail),
+        // then widen the framing to fit the pair.
+        geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        const sx = bb.max.x - bb.min.x, sz = bb.max.z - bb.min.z;
+        const axis = sx < sz ? 'x' : 'z';
+        const sep = (sx < sz ? sx : sz) * 0.62;
+        modelV1.position.set(0, 0, 0); model.position.set(0, 0, 0);
+        modelV1.position[axis] = -sep;
+        model.position[axis] = sep;
+        effectiveR = r + sep * 1.35;
+        tagV1.hidden = tagV2.hidden = false;
+    } else {
+        modelV1.position.set(0, 0, 0);
+        model.position.set(0, 0, 0);
+        tagV1.hidden = tagV2.hidden = true;
+    }
     target.copy(c);
-    radius = r;
-    dist = r * 2.4;
+    radius = effectiveR;
+    dist = effectiveR * 2.4;
     // Model units vary (FBX exports in cm -> huge radii): scale near/far/fog
-    camera.near = Math.max(0.01, r / 500);
-    camera.far = r * 10;
+    camera.near = Math.max(0.01, effectiveR / 500);
+    camera.far = effectiveR * 10;
     camera.updateProjectionMatrix();
-    scene.fog.near = r * 2.2;
-    scene.fog.far = r * 6;
+    scene.fog.near = effectiveR * 2.2;
+    scene.fog.far = effectiveR * 6;
+}
+
+// Project a world position to viewport pixels for the floating tags.
+const tagTmp = new THREE.Vector3();
+function tagAt(el, m) {
+    const g = m.geometry;
+    if (!g || !g.attributes.position) { el.hidden = true; return; }
+    if (!g.boundingSphere) g.computeBoundingSphere();
+    tagTmp.copy(g.boundingSphere.center);
+    tagTmp.y += g.boundingSphere.radius * 0.92;
+    tagTmp.x += m.position.x; tagTmp.z += m.position.z;
+    tagTmp.project(camera);
+    el.style.left = ((tagTmp.x * 0.5 + 0.5) * viewport.clientWidth) + 'px';
+    el.style.top = ((-tagTmp.y * 0.5 + 0.5) * viewport.clientHeight) + 'px';
+    el.hidden = false;
 }
 
 // --- loop --------------------------------------------------------------------
@@ -248,6 +325,7 @@ renderer.setAnimationLoop(() => {
         target.y + dist * sp,
         target.z + dist * cp * Math.cos(yaw));
     camera.lookAt(target);
+    if (lodsV1) { tagAt(tagV1, modelV1); tagAt(tagV2, model); }
     renderer.render(scene, camera);
 });
 
@@ -296,10 +374,14 @@ const dlAllBtn = document.getElementById('dlAllBtn');
 genBtn.addEventListener('click', async () => {
     if (!fileBuf) return;
     lods = [];
+    lodsV1 = null;
     geos = [];
     edgeGeos = [];
     urlGeo.clear();
     current = -1;
+    modelV1.visible = false;
+    model.position.set(0, 0, 0);
+    tagV1.hidden = tagV2.hidden = true;
     genReport.textContent = '';
     genReportWrap.hidden = false;
     dlAllBtn.hidden = true;

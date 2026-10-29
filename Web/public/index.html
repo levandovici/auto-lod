@@ -10,8 +10,8 @@
 <meta name="author" content="MICHITAI">
 <meta name="theme-color" content="#2563eb">
 <link rel="canonical" href="https://lod.michitai.com/">
-<link rel="icon" href="./favicon.svg?v=7" type="image/svg+xml">
-<link rel="manifest" href="./site.webmanifest?v=7">
+<link rel="icon" href="./favicon.svg?v=10" type="image/svg+xml">
+<link rel="manifest" href="./site.webmanifest?v=10">
 
 <!-- Open Graph -->
 <meta property="og:title" content="ComplexLODs — Feature-Preserving LOD Generation for Unity">
@@ -60,8 +60,8 @@
 }
 </script>
 
-<link rel="stylesheet" href="./style.css?v=7">
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.js?v=7" } }</script>
+<link rel="stylesheet" href="./style.css?v=10">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js?v=10" } }</script>
 </head>
 <body>
 
@@ -116,6 +116,8 @@
             </div>
             <div id="viewport">
                 <div id="loadBar" hidden><i></i><span id="loadTxt">loading…</span></div>
+                <div id="tagV1" class="shipTag" hidden>V1 · previous</div>
+                <div id="tagV2" class="shipTag" hidden>V2 · current</div>
             </div>
             <div class="controls">
                 <label class="slider-row">
@@ -127,7 +129,7 @@
                 <label><input id="wire" type="checkbox"> wireframe</label>
                 <label><input id="spin" type="checkbox" checked> auto-rotate</label>
             </div>
-            <p class="note">Real simplifier output on the demo source mesh (Quality preset) — textured, 196k triangles. LOD5 intentionally shares LOD4's mesh — identical geometry is deduplicated, exactly as the Unity plugin does.</p>
+            <p class="note">Two ships, one slider: <b>V1</b> is the previous algorithm's output, <b>V2</b> the current visibility-classified engine — same Quality preset on the 196k pinnace source, textured. Drag to LOD5 and compare silhouettes, rigging and openings.</p>
         </section>
 
         <section class="panel" id="try">
@@ -191,19 +193,19 @@
         </section>
 
         <section class="panel" id="results">
-            <div class="panel-head"><h2>Reference results — Quality preset</h2></div>
+            <div class="panel-head"><h2>Reference results — Quality preset, V1 vs V2</h2></div>
             <table class="report">
-                <thead><tr><th>Level</th><th>Target tris</th><th>Actual tris</th><th>Boundary loops</th><th>Status</th></tr></thead>
+                <thead><tr><th>Level</th><th>Target tris</th><th>V1 tris</th><th>V2 tris</th><th>Boundary loops V1→V2</th><th>Status</th></tr></thead>
                 <tbody>
-                    <tr><td>LOD0</td><td>—</td><td>196,169</td><td>2,107</td><td>source</td></tr>
-                    <tr><td>LOD1</td><td>122,606</td><td>122,605</td><td>2,108</td><td>target reached · interior ×1</td></tr>
-                    <tr><td>LOD2</td><td>76,629</td><td>76,629</td><td>2,108</td><td>target reached · interior ×1</td></tr>
-                    <tr><td>LOD3</td><td>47,893</td><td>47,892</td><td>2,108</td><td>target reached · interior ×2</td></tr>
-                    <tr><td>LOD4</td><td>29,933</td><td>33,068</td><td>536</td><td>preservation limited · interior ×3</td></tr>
-                    <tr><td>LOD5</td><td>18,708</td><td>33,068</td><td>536</td><td>shared — identical to LOD4</td></tr>
+                    <tr><td>LOD0</td><td>—</td><td>196,169</td><td>196,169</td><td>2,107 → 2,107</td><td>source</td></tr>
+                    <tr><td>LOD1</td><td>122,606</td><td>122,605</td><td>122,606</td><td>2,108 → 2,214</td><td>both reached · interior ×1</td></tr>
+                    <tr><td>LOD2</td><td>76,629</td><td>76,629</td><td>76,628</td><td>2,108 → 2,214</td><td>both reached · interior ×1</td></tr>
+                    <tr><td>LOD3</td><td>47,893</td><td>47,892</td><td>47,892</td><td>2,108 → 2,214</td><td>both reached · interior ×2</td></tr>
+                    <tr><td>LOD4</td><td>29,933</td><td>33,068</td><td>29,933</td><td>536 → 2,214</td><td>V1 preservation limited · V2 reached ×2</td></tr>
+                    <tr><td>LOD5</td><td>18,708</td><td>33,068</td><td>28,584</td><td>536 → 2,168</td><td>V1 shared w/ LOD4 · V2 component floor ×3</td></tr>
                 </tbody>
             </table>
-            <p class="note">The kit is a modular assembly of hundreds of disconnected sheets. Once every remaining collapse would move a locked silhouette vertex or tear a protected loop, the simplifier stops and reports the floor instead of shredding the facade.</p>
+            <p class="note">Same budget at LOD1–LOD3; V2 goes deeper at LOD4 and preserves what V1 destroyed — 2,214 boundary openings stay alive through LOD4 (V1 erased 75%), masts and rigging degrade to legal stubs instead of vanishing (V1 let them telescope away entirely), and at LOD5 V2 reports its honest floor rather than silently shredding the hull. The kit is a modular assembly of hundreds of disconnected sheets; once every remaining collapse would move a locked silhouette vertex or empty a connected component, the simplifier stops and reports the floor.</p>
         </section>
 
         <section id="faq">
@@ -285,6 +287,6 @@
     </div>
 </footer>
 
-<script type="module" src="./app.js?v=7"></script>
+<script type="module" src="./app.js?v=10"></script>
 </body>
 </html>
