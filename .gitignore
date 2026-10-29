@@ -88,3 +88,9 @@ Web/test/out/
 Web/test/cube.*
 Web/test/tri_bin.stl
 Web/test/tetra.*
+
+# Generated image artifacts (marketing cards, screenshots) — regenerable,
+# keep binary churn out of history. Project art dirs still commit PNGs.
+*.png
+!Assets/**/*.png
+!Web/public/**/*.png
