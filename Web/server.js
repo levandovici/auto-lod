@@ -229,6 +229,7 @@ function serveStatic(req, res, urlPath) {
         const headers = {
             'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
             'Cache-Control': file.endsWith('.html') ? 'no-cache' : 'public, max-age=3600',
+            'Strict-Transport-Security': 'max-age=31536000',
             'ETag': etag
         };
         if (req.headers['if-none-match'] === etag) {
